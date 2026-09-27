@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import {
   BadgeCheck,
+  Bot,
   Box,
   ChevronDown,
   ChartNoAxesCombined,
@@ -366,6 +367,11 @@ export function AppSidebar({
             {CONTROL_PLANE_ENABLED && (
               <NavLink to="/license" icon={BadgeCheck} onNavigate={onNavigate}>
                 License
+              </NavLink>
+            )}
+            {CONTROL_PLANE_ENABLED && (
+              <NavLink to="/mcp" icon={Bot} onNavigate={onNavigate}>
+                MCP
               </NavLink>
             )}
             <NavLink to="/account" icon={CircleUser} onNavigate={onNavigate}>
