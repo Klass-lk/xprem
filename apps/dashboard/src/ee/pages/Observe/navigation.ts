@@ -38,6 +38,8 @@ export const observeNavigation: Array<{
   // The split follows what the data is, not the URL: the three telemetry pages
   // read the Observe explorer, the two others read the device registry.
   permission: Permission;
+  // Part of the Enterprise edition: the sidebar badges it without a license.
+  enterprise?: true;
 }> = [
   {
     value: 'overview',
@@ -79,6 +81,7 @@ export const observeNavigation: Array<{
     question: 'Which device metadata can I filter on?',
     icon: Braces,
     scopes: ['none'],
+    enterprise: true,
   },
 ];
 

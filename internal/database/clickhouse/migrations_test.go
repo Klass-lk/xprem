@@ -74,6 +74,10 @@ func TestConcurrentMigratorsApplyOnce(t *testing.T) {
 	// resets on the shared test database are house style (see pgtest).
 	for _, table := range []string{
 		"goose_db_version",
+		// Before observe_logs: the view reads it and would outlive it.
+		"error_occurrences_mv",
+		"error_occurrences",
+		"error_groups",
 		"observe_metrics",
 		"observe_logs",
 		"device_health_events",

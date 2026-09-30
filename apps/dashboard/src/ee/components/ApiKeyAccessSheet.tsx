@@ -26,13 +26,14 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import { EnterpriseFeatureGate } from '@/ee/components/EnterpriseFeatureGate';
+import { tokenAccessFeature } from '@/ee/lib/enterpriseFeatures';
 import { BranchPatternInput } from '@/ee/components/BranchPatternInput';
 import { cn } from '@/lib/utils';
 
 // Side panel to edit what one API token is allowed to do: which branches it
 // reaches and with which actions, whether it may open a branch that does not
 // exist yet, and the source addresses it may be used from. Without a valid
-// license the form is masked by EnterpriseFeatureGate.
+// license the form is replaced by EnterpriseFeatureGate.
 export const ApiKeyAccessSheet = ({
   apiKey,
   onClose,
@@ -58,7 +59,7 @@ export const ApiKeyAccessSheet = ({
           </SheetDescription>
         </SheetHeader>
         <div className="mt-6">
-          <EnterpriseFeatureGate>
+          <EnterpriseFeatureGate feature={tokenAccessFeature}>
             {accessQuery.isLoading ? (
               <div className="space-y-3">
                 <Skeleton className="h-12 w-full" />

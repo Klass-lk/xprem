@@ -31,7 +31,7 @@ const sampleSeries = (() => {
 const tabs = [
   { label: 'Health', icon: Activity },
   { label: 'Adoption', icon: Users },
-  { label: 'Faults', icon: AlertTriangle },
+  { label: 'Crashes', icon: AlertTriangle },
 ];
 
 // Only the plot is masked. The tabs and the caption stay legible, so the card

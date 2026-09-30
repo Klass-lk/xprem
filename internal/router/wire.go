@@ -15,6 +15,7 @@ import (
 	"xprem/ee/observe"
 	"xprem/ee/rbac"
 	"xprem/ee/sso"
+	"xprem/ee/symbolication"
 	"xprem/ee/telemetry"
 	"xprem/internal/bucket"
 	"xprem/internal/cache"
@@ -63,6 +64,7 @@ type AppContainer struct {
 	SSOHandler                  *sso.SSOHandler
 	UpdateHandler               *dashhandlers.UpdateHandler
 	BundlePatchHandler          *dashhandlers.BundlePatchHandler
+	SourcemapHandler            *symbolication.Handler
 	UploadHandler               *handlers.UploadHandler
 	RepublishHandler            *handlers.RepublishHandler
 	UsersHandler                *dashhandlers.UsersHandler
@@ -71,6 +73,7 @@ type AppContainer struct {
 	ObserveIngestHandler        *observe.IngestHandler
 	ObserveHealthHistoryHandler *observe.HealthHistoryHandler
 	ObserveExplorerHandler      *observe.ExplorerHandler
+	ObserveErrorsHandler        *observe.ErrorsHandler
 	IdentityHandler             *identity.IdentityHandler
 }
 
@@ -103,6 +106,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	var mcpHandler *mcp.MCPHandler
 	var rolloutRepo services.RolloutRepository
 	var bundlePatchRepo services.BundlePatchRepository
+	var sourcemapIndexRepo symbolication.IndexRepository
 	var licenseRepo licensing.LicenseRepository
 	var ssoRepo sso.SSORepository
 	var apiKeyAccessRepo apikeyrestrictions.ApiKeyAccessRepository
@@ -116,6 +120,8 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	var healthHistory *observe.HealthHistory
 	var stateHistory *observe.StateHistory
 	var explorer *observe.Explorer
+	// nil without CLICKHOUSE_URL: telemetry is then acknowledged and dropped.
+	var observeClickHouse *clickhouse.Engine
 	var checkInRecorder *observe.CheckInRecorder
 
 	telemetryEnabled := !config.IsServerTelemetryDisabled() && !config.IsTestMode()
@@ -176,6 +182,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		}
 		rolloutRepo = repository.NewPostgresRolloutRepository(dbEngine)
 		bundlePatchRepo = repository.NewPostgresBundlePatchRepository(dbEngine)
+		sourcemapIndexRepo = symbolication.NewPostgresIndexRepository(dbEngine)
 
 		// Resolved even when telemetry is off: licensing needs the instance id.
 		seedInstanceId, _ := resolvedBucket.InstanceStore.ID(ctx)
@@ -191,8 +198,6 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 			stateHistory = observe.NewStateHistory(dbEngine)
 			identityService = identity.NewService(identity.NewPostgresIdentityRepository(dbEngine))
 			checkInRecorder = observe.NewCheckInRecorder(identityService, cache.GetCache())
-			var observeClickHouse *clickhouse.Engine
-
 			if chUrl := config.GetClickHouseURL(); chUrl != "" {
 				chEngine, err := clickhouse.NewClickHouseEngine(ctx, chUrl)
 				if err != nil {
@@ -286,9 +291,31 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	updateService := services.NewUpdateService(updateRepo)
 	bsDiffService := services.NewBSDiffService(resolvedBucket.BlobStore, resolvedBucket.PatchStore, jobsClient, updateService, updateRepo, bundlePatchRepo)
 	expoImportService := expoimport.NewService(appService, branchService, channelService, updateRepo, jobsClient, resolvedBucket.BlobStore, resolvedBucket.UpdateStore)
+	// nil unless UPLOAD_SOURCEMAPS is on, which needs the control plane.
+	sourcemapStore, err := bucket.OpenSourcemapStore()
+	if err != nil {
+		log.Fatalf("UPLOAD_SOURCEMAPS is enabled but %v", err)
+	}
+	var symbolicationService *symbolication.Service
+	if sourcemapStore != nil {
+		// CDN_BASE_URL fronts a publicly readable bucket, and a source map
+		// embeds the app's source code.
+		if sourcemapStore.SharesUpdatesLocation() && cdn.ResolvedType() == "generic" {
+			log.Fatalf("UPLOAD_SOURCEMAPS: source maps cannot share the updates bucket when CDN_BASE_URL serves it; point them at a dedicated bucket")
+		}
+		symbolicationService = symbolication.NewService(sourcemapStore, sourcemapIndexRepo, jobsClient)
+	}
 	if jobsClient != nil {
 		expoimport.RegisterWorker(jobsClient.Workers(), expoImportService)
 		services.RegisterBSDiffWorker(jobsClient.Workers(), bsDiffService)
+		if symbolicationService != nil {
+			symbolication.RegisterWorker(jobsClient.Workers(), symbolicationService)
+		}
+		if symbolicationService != nil && observeClickHouse != nil {
+			errorGroupsSweep := observe.NewErrorGroupsSweep(explorer, symbolicationService)
+			observe.RegisterErrorGroupsWorker(jobsClient.Workers(), errorGroupsSweep)
+			jobsClient.AddPeriodic(errorGroupsSweep.PeriodicJob())
+		}
 		if err := jobsClient.Start(ctx); err != nil {
 			log.Fatalf("Job system startup failed: %v", err)
 		}
@@ -301,6 +328,10 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	expoProtocolService := services.NewExpoProtocolService(appRepo, channelRepo, updateRepo, updateService, services.DefaultBranchRules(), resolvedBucket.BlobStore, resolvedBucket.PatchStore)
 	deploymentService := services.NewDeploymentService(branchService, updateService, updateRepo, resolvedBucket.BlobStore, resolvedBucket.UpdateStore, bsDiffService)
 	deploymentService.SetOnAuditEvent(auditService.Record)
+	if sourcemapStore != nil {
+		deploymentService.SetSourcemapStore(sourcemapStore)
+		deploymentService.SetSourcemapIndexer(symbolicationService)
+	}
 	bsDiffService.SetOnAuditEvent(auditService.Record)
 	rolloutService := services.NewRolloutService(rolloutRepo, channelRepo, updateRepo, deploymentService)
 	rolloutService.SetOnAuditEvent(auditService.Record)
@@ -375,12 +406,14 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		SSOHandler:                  sso.NewSSOHandler(ssoService, rateLimiter),
 		UpdateHandler:               dashhandlers.NewUpdateHandler(updateService, deploymentService),
 		BundlePatchHandler:          dashhandlers.NewBundlePatchHandler(bsDiffService),
+		SourcemapHandler:            symbolication.NewHandler(symbolicationService),
 		UploadHandler:               handlers.NewUploadHandler(deploymentService),
 		UsersHandler:                dashhandlers.NewUsersHandler(userService, dashboardAuthService, rateLimiter),
 		UserRepo:                    userRepo,
 		ObserveIngestHandler:        observe.NewIngestHandler(identityService, telemetrySink, branchResolver, checkInRecorder),
 		ObserveHealthHistoryHandler: observe.NewHealthHistoryHandler(healthHistory, stateHistory),
 		ObserveExplorerHandler:      observe.NewExplorerHandler(explorer, identityService),
+		ObserveErrorsHandler:        observe.NewErrorsHandler(explorer, symbolicationService),
 		IdentityHandler:             identity.NewIdentityHandler(identityService),
 		MCPHandler:                  mcpHandler,
 		OAuthHandler:                oauthHandler,

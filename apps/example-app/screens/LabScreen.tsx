@@ -5,6 +5,18 @@ import { Observe, useObserve } from 'expo-observe'
 
 import { ThemedText } from '@/components/ThemedText'
 
+// Not a tail call, so no engine can fold the frames away.
+function descend(depth: number): number {
+  if (depth === 0) {
+    throw new Error('Deliberate deep crash from the observe lab')
+  }
+  return descend(depth - 1) + 1
+}
+
+function recurseForever(): number {
+  return recurseForever() + 1
+}
+
 function Action({
   title,
   description,
@@ -98,6 +110,28 @@ export function LabScreen({
           onPress={() => {
             try {
               throw new Error('Deliberate caught error from the observe lab')
+            } catch (error) {
+              Observe.reportError(error)
+            }
+          }}
+        />
+        <Action
+          title="Throw 300 frames deep"
+          description="Reported error whose stack is 300 descend() frames: 50 recent + 50 oldest are kept"
+          onPress={() => {
+            try {
+              descend(300)
+            } catch (error) {
+              Observe.reportError(error)
+            }
+          }}
+        />
+        <Action
+          title="Overflow the call stack"
+          description="Infinite recursion, RangeError: does Hermes skip frames itself?"
+          onPress={() => {
+            try {
+              recurseForever()
             } catch (error) {
               Observe.reportError(error)
             }

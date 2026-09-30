@@ -389,6 +389,31 @@ FROM updates u
 JOIN branches b ON u.branch_id = b.id
 WHERE u.id = $1 AND b.app_id = $2 AND b.name = $3;
 
+-- name: SetUpdateSourcemapHash :execresult
+UPDATE updates
+SET sourcemap_hash = $2
+WHERE updates.id = $1 AND branch_id = (
+    SELECT branches.id
+    FROM branches
+    WHERE app_id = $3
+      AND name = $4
+);
+
+-- name: GetUpdateSourcemapHash :one
+SELECT u.sourcemap_hash
+FROM updates u
+JOIN branches b ON u.branch_id = b.id
+WHERE u.id = $1 AND b.app_id = $2 AND b.name = $3;
+
+-- name: GetUpdateSourcemapByUUID :one
+-- The map hash and index status of the update a device reports by UUID.
+SELECT u.sourcemap_hash, COALESCE(si.status, '') AS index_status
+FROM updates u
+JOIN branches b ON b.id = u.branch_id
+LEFT JOIN sourcemap_indexes si ON si.branch_id = u.branch_id AND si.update_id = u.id
+WHERE b.app_id = sqlc.arg('app_id')
+  AND u.update_uuid = sqlc.arg('update_uuid');
+
 -- name: ListUpdatesWithoutAssetMapping :many
 SELECT u.id, b.app_id, b.name AS branch, rv.version AS runtime_version
 FROM updates u
@@ -424,7 +449,7 @@ LIMIT 1;
 -- update id is only unique per branch, and branch names are only unique per app.
 -- Without the app filter the same (id, branch, runtime) triple matches another
 -- tenant's row.
-SELECT u.id, u.update_uuid, b.app_id, b.name AS branch_name, r.version AS runtime_version, u.update_type, u.commit_hash, u.message, u.platform, u.created_at, u.rollout_percentage, u.control_update_id, u.checked_at
+SELECT u.id, u.update_uuid, b.app_id, b.name AS branch_name, r.version AS runtime_version, u.update_type, u.commit_hash, u.message, u.platform, u.created_at, u.rollout_percentage, u.control_update_id, u.checked_at, u.sourcemap_hash
 FROM updates u
 INNER JOIN branches b ON u.branch_id = b.id
 INNER JOIN runtime_versions r ON u.runtime_version_id = r.id
@@ -2571,3 +2596,47 @@ WHERE b.app_id = sqlc.arg('app_id')
   AND b.name = sqlc.arg('branch_name')
   AND bp.target_update_id = sqlc.arg('target_update_id')
 ORDER BY s.id DESC;
+
+-- name: UpsertSourcemapIndex :execrows
+-- App-scoped: the branch lookup refuses a branch of another app. An existing
+-- row is reset.
+INSERT INTO sourcemap_indexes (branch_id, update_id, hash, status, attempts)
+SELECT b.id, sqlc.arg('update_id'), sqlc.arg('hash'), sqlc.arg('status'), sqlc.arg('attempts')
+FROM branches b
+WHERE b.app_id = sqlc.arg('app_id') AND b.name = sqlc.arg('branch_name')
+ON CONFLICT (branch_id, update_id) DO UPDATE
+SET hash = EXCLUDED.hash,
+    status = EXCLUDED.status,
+    attempts = EXCLUDED.attempts,
+    reason = NULL,
+    segments = NULL,
+    index_size = NULL,
+    updated_at = CURRENT_TIMESTAMP;
+
+-- name: FinishSourcemapIndex :execrows
+UPDATE sourcemap_indexes si
+SET status = sqlc.arg('status'),
+    reason = sqlc.narg('reason'),
+    segments = sqlc.narg('segments'),
+    index_size = sqlc.narg('index_size'),
+    updated_at = CURRENT_TIMESTAMP
+FROM branches b
+WHERE b.id = si.branch_id
+  AND b.app_id = sqlc.arg('app_id')
+  AND b.name = sqlc.arg('branch_name')
+  AND si.update_id = sqlc.arg('update_id');
+
+-- name: GetUpdateSourcemap :one
+-- The update's map and, when a job handled it, its index record: one row
+-- per update, index columns NULL until then.
+SELECT u.sourcemap_hash,
+       COALESCE(si.status, '') AS index_status, si.reason AS index_reason, si.segments AS index_segments,
+       si.index_size, si.attempts AS index_attempts, si.updated_at AS index_updated_at
+FROM updates u
+JOIN branches b ON b.id = u.branch_id
+JOIN runtime_versions r ON r.id = u.runtime_version_id
+LEFT JOIN sourcemap_indexes si ON si.branch_id = u.branch_id AND si.update_id = u.id
+WHERE b.app_id = sqlc.arg('app_id')
+  AND b.name = sqlc.arg('branch_name')
+  AND r.version = sqlc.arg('runtime_version')
+  AND u.id = sqlc.arg('update_id');

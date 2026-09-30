@@ -17,7 +17,7 @@ import { dimensionSpec, seriesColors } from './dimensions';
 import { HealthRankTable } from '@/ee/components/HealthRankTable';
 import { exactNumber, withoutPartialBucket } from './format';
 
-type Metric = 'health' | 'adoption' | 'faults';
+type Metric = 'health' | 'adoption' | 'crashes';
 
 const metricOptions: Array<{
   key: Metric;
@@ -38,8 +38,8 @@ const metricOptions: Array<{
     icon: Users,
   },
   {
-    key: 'faults',
-    label: 'Faults',
+    key: 'crashes',
+    label: 'Crashes',
     description: 'Devices that failed to launch',
     icon: AlertTriangle,
   },
@@ -79,8 +79,10 @@ export const HealthBySegment = ({
       updateUUIDs,
       dimension,
       filters.query.from,
+      filters.query.to,
     ],
-    queryFn: () => api.getUpdateHealthSegments(updateUUIDs, dimension, filters.query.from),
+    queryFn: () =>
+      api.getUpdateHealthSegments(updateUUIDs, dimension, filters.query.from, filters.query.to),
     enabled: updateUUIDs.length > 0,
     refetchInterval: liveInterval(filters.live, filters.periodSpec),
     // Only while the question stays the same. Held across a change of
@@ -190,7 +192,7 @@ export const HealthBySegment = ({
               formatAxisValue={formatValue}
               // Health is a percentage of a whole, so the axis is the whole,
               // exactly like the per-update chart it splits. Adoption and
-              // faults are counts and keep their zero baseline.
+              // crashes are counts and keep their zero baseline.
               maximum={metric === 'health' ? 100 : undefined}
               highlightedKey={highlighted}
               ariaLabel={`${selected.label} by segment over time`}

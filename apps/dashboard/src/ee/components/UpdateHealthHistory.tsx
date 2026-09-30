@@ -32,7 +32,7 @@ export type HealthHistorySeries = {
 };
 
 type AggregatedPoint = Omit<UpdateHealthHistoryPoint, 'role'>;
-type Metric = 'health' | 'adoption' | 'faults';
+type Metric = 'health' | 'adoption' | 'crashes';
 
 type MetricOption = {
   key: Metric;
@@ -55,9 +55,9 @@ const metricOptions: MetricOption[] = [
     icon: Users,
   },
   {
-    key: 'faults',
-    label: 'Faults',
-    description: 'Unique faulty devices, by root cause',
+    key: 'crashes',
+    label: 'Crashes',
+    description: 'Unique crashed devices, by root cause',
     icon: AlertTriangle,
   },
 ];
@@ -77,12 +77,17 @@ const RESAMPLE_TARGET_POINTS = 140;
 // whatever the server stamps as 'to'.
 const MAX_HISTORY_WINDOW_MS = 90 * 24 * 60 * 60 * 1_000;
 
-const boundedFrom = (from?: string) => {
+const boundedFrom = (from?: string, to?: string) => {
   if (!from) return from;
   const requested = new Date(from).getTime();
   if (Number.isNaN(requested)) return from;
+  // The ceiling counts back from 'to' when the caller sets one, exactly; from
+  // now otherwise, rounded to a day so the query key stays stable.
+  const end = to ? new Date(to).getTime() : NaN;
   const day = 24 * 60 * 60 * 1_000;
-  const earliest = Math.ceil((Date.now() - MAX_HISTORY_WINDOW_MS) / day) * day;
+  const earliest = Number.isNaN(end)
+    ? Math.ceil((Date.now() - MAX_HISTORY_WINDOW_MS) / day) * day
+    : end - MAX_HISTORY_WINDOW_MS;
   return requested >= earliest ? from : new Date(earliest).toISOString();
 };
 
@@ -159,7 +164,7 @@ const toTimeSeries = (
     }),
   }));
 
-const faultSeries = (
+const crashSeries = (
   series: Array<HealthHistorySeries & { points: AggregatedPoint[] }>
 ): TimeSeriesDefinition[] => {
   const byTimestamp = new Map<number, { native: number; js: number }>();
@@ -221,6 +226,7 @@ const SeriesLegend = ({
 export const UpdateHealthHistory = ({
   series,
   from,
+  to,
   live = false,
   annotations = [],
   annotationNoun,
@@ -231,6 +237,7 @@ export const UpdateHealthHistory = ({
 }: {
   series: HealthHistorySeries[];
   from?: string;
+  to?: string;
   live?: boolean;
   annotations?: TimeSeriesAnnotation[];
   annotationNoun?: string;
@@ -249,10 +256,10 @@ export const UpdateHealthHistory = ({
     () => Array.from(new Set(series.flatMap(item => item.updateUUIDs))),
     [series]
   );
-  const windowFrom = boundedFrom(from);
+  const windowFrom = boundedFrom(from, to);
   const query = useQuery({
-    queryKey: ['update-health-history', selectedAppId, updateUUIDs.join(','), windowFrom],
-    queryFn: () => api.getUpdateHealthHistory(updateUUIDs, windowFrom),
+    queryKey: ['update-health-history', selectedAppId, updateUUIDs.join(','), windowFrom, to],
+    queryFn: () => api.getUpdateHealthHistory(updateUUIDs, windowFrom, to),
     enabled: !!selectedAppId && updateUUIDs.length > 0,
     refetchInterval: live ? 5_000 : false,
   });
@@ -276,7 +283,7 @@ export const UpdateHealthHistory = ({
     () => toTimeSeries(aggregated, point => point.devicesOnUpdate),
     [aggregated]
   );
-  const faults = useMemo(() => faultSeries(aggregated), [aggregated]);
+  const crashes = useMemo(() => crashSeries(aggregated), [aggregated]);
   // The counts behind each curve, taken from its newest bucket: the same three
   // figures the device dimensions get, so a split by update group reads like a
   // split by OS version. A group with no bucket in the window has no curve
@@ -312,7 +319,7 @@ export const UpdateHealthHistory = ({
     .pop();
   const selectedOption = metricOptions.find(option => option.key === metric) ?? metricOptions[0];
   const chartSeries =
-    metric === 'health' ? healthSeries : metric === 'adoption' ? adoptionSeries : faults;
+    metric === 'health' ? healthSeries : metric === 'adoption' ? adoptionSeries : crashes;
   const visibleChartSeries = chartSeries.filter(item => item.points.length > 0);
   const formatValue =
     metric === 'health'

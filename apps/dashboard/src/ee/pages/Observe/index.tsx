@@ -8,7 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { AdminOnlyNote } from '@/components/ui/admin-only-note';
 import { useAppPermission } from '@/ee/lib/PermissionsContext';
 import { FilterBar } from './FilterBar';
-import { useObserveFilters } from './filters';
+import { maxWindowMs, useObserveFilters } from './filters';
 import { isObservePage, observePage } from './navigation';
 
 const OverviewView = lazy(() =>
@@ -31,7 +31,7 @@ export const Observe = () => {
   const { page: requested } = useParams<{ page: string }>();
   const { search } = useLocation();
   const page = observePage(requested);
-  const filters = useObserveFilters(page.scopes);
+  const filters = useObserveFilters(page.scopes, maxWindowMs(page.value));
   // Display gating only, the routes re-check it. 'any-member' because the
   // matching routes declare FallbackAnyMember: without an enterprise license
   // roles are not enforced, and these pages were open to every member before

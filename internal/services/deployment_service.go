@@ -7,6 +7,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"path"
 	"runtime"
 	"slices"
 	"strconv"
@@ -89,6 +90,13 @@ type FileUploadItem struct {
 	Role FileRole `json:"role"`
 }
 
+// SourcemapUploadItem is the launch asset's source map, sent beside the file
+// list: only its path and hash matter, it has no place in the manifest.
+type SourcemapUploadItem struct {
+	Path string `json:"path"`
+	Hash string `json:"hash"`
+}
+
 // assetMapping is the manifest half of the file list: the roles the CLI stamped
 // on each file are what says which platform's bundle this is, so nothing has to
 // be inferred from a file name.
@@ -134,8 +142,11 @@ type RequestUploadURLParams struct {
 	RuntimeVersion string
 	// Files is one platform's publish: its launch asset, its assets, and the
 	// config files. Never the other platform's.
-	Files   []FileUploadItem
-	Message string
+	Files []FileUploadItem
+	// Sourcemap is the launch asset's source map, when the export has one.
+	// Ignored unless the server stores source maps.
+	Sourcemap *SourcemapUploadItem
+	Message   string
 	// Non-nil publishes the update as a progressive rollout served to this share
 	// of devices (1-99).
 	RolloutPercentage *int
@@ -156,9 +167,28 @@ type DeploymentService struct {
 	bsDiffService *BsDiffService
 	blobStore     BlobStore
 	updateStore   UpdateStore
+	// sourcemapStore is nil unless UPLOAD_SOURCEMAPS is on.
+	sourcemapStore SourcemapStore
+	// sourcemapIndexer is nil unless the enterprise index job is wired.
+	sourcemapIndexer SourcemapIndexer
 	// onAuditEvent is nil in community edition, where publishes, rollbacks and
 	// republishes leave no events.
 	onAuditEvent auditlog.RecordFunc
+}
+
+// SetSourcemapStore turns on source map uploads.
+func (s *DeploymentService) SetSourcemapStore(store SourcemapStore) {
+	s.sourcemapStore = store
+}
+
+// SourcemapIndexer schedules the index of an update's source map.
+type SourcemapIndexer interface {
+	ScheduleIndex(ctx context.Context, update types.Update, hash string) error
+}
+
+// SetSourcemapIndexer plugs the index job seam.
+func (s *DeploymentService) SetSourcemapIndexer(indexer SourcemapIndexer) {
+	s.sourcemapIndexer = indexer
 }
 
 // SetOnAuditEvent plugs the audit emission seam. Nil-safe.
@@ -220,6 +250,10 @@ func (s *DeploymentService) ProcessUploadedUpdate(ctx context.Context, params Pr
 		return "", err
 	}
 	errorVerify := update2.VerifyUploadedUpdate(ctx, *currentUpdate, mapping)
+	var sourcemapHash *string
+	if errorVerify == nil {
+		sourcemapHash, errorVerify = s.verifySourcemapUploaded(ctx, *currentUpdate)
+	}
 	if errorVerify != nil {
 		if errors.Is(errorVerify, update2.ErrInvalidExpoConfig) {
 			// Malformed content: fail the publish and clear the folder so a
@@ -253,10 +287,42 @@ func (s *DeploymentService) ProcessUploadedUpdate(ctx context.Context, params Pr
 		log.Printf("[RequestID: %s] Error marking update as checked: %v", params.RequestID, err)
 		return "", err
 	}
+	s.scheduleSourcemapIndex(ctx, *currentUpdate, sourcemapHash)
 	log.Printf("[RequestID: %s] Update marked as checked", params.RequestID)
 	s.recordDeliveryEvent(ctx, auditlog.ActionUpdatePublished, *currentUpdate,
 		map[string]any{"platform": string(params.Platform)})
 	return updateUUID, nil
+}
+
+// verifySourcemapUploaded is the update's source map hash, nil without one,
+// and fails when the store does not hold that map.
+func (s *DeploymentService) verifySourcemapUploaded(ctx context.Context, update types.Update) (*string, error) {
+	hash, err := s.updateRepo.GetUpdateSourcemapHash(ctx, update)
+	if err != nil || hash == nil {
+		return nil, err
+	}
+	if s.sourcemapStore == nil {
+		return nil, fmt.Errorf("sourcemap %s declared but sourcemap uploads are disabled", *hash)
+	}
+	exists, err := s.sourcemapStore.Exists(ctx, update.AppId, *hash)
+	if err != nil {
+		return nil, fmt.Errorf("checking sourcemap %s: %w", *hash, err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("missing sourcemap %s in update", *hash)
+	}
+	return hash, nil
+}
+
+// scheduleSourcemapIndex is best effort: the update is live with or without
+// its index.
+func (s *DeploymentService) scheduleSourcemapIndex(ctx context.Context, update types.Update, hash *string) {
+	if hash == nil || s.sourcemapIndexer == nil {
+		return
+	}
+	if err := s.sourcemapIndexer.ScheduleIndex(ctx, update, *hash); err != nil {
+		log.Printf("[sourcemap] scheduling the index of update %s: %v", update.UpdateId, err)
+	}
 }
 
 func getUpdateUUIDFromMetadata(ctx context.Context, update types.Update) string {
@@ -343,7 +409,7 @@ func (s *DeploymentService) RequestUploadLocalFile(ctx context.Context, params R
 		return ErrTokenAppMismatch
 	}
 
-	if err := bucket.HandleUpload(ctx, params.AppID, params.Key, params.Body); err != nil {
+	if err := s.handleLocalUpload(ctx, params); err != nil {
 		log.Printf("[RequestID: %s] Error handling upload file: %v", params.RequestID, err)
 		if errors.Is(err, bucket.ErrBlobHashMismatch) {
 			return ErrUploadHashMismatch
@@ -351,6 +417,47 @@ func (s *DeploymentService) RequestUploadLocalFile(ctx context.Context, params R
 		return ErrUploadFailed
 	}
 	return nil
+}
+
+// handleLocalUpload writes a local upload to the store its key belongs to.
+func (s *DeploymentService) handleLocalUpload(ctx context.Context, params RequestLocalFileUploadParams) error {
+	hash, isSourcemap := bucket.SourcemapKeyHash(params.Key, params.AppID)
+	if !isSourcemap {
+		return bucket.HandleUpload(ctx, params.AppID, params.Key, params.Body)
+	}
+	if s.sourcemapStore == nil {
+		return fmt.Errorf("sourcemap uploads are disabled")
+	}
+	return s.sourcemapStore.Put(ctx, params.AppID, hash, params.Body)
+}
+
+// requestSourcemapUpload records the source map on the update and hands back
+// the request that uploads it; nil when the store already holds it.
+func (s *DeploymentService) requestSourcemapUpload(ctx context.Context, params RequestUploadURLParams, update types.Update) (*bucket.FileUploadRequest, error) {
+	sourcemap := *params.Sourcemap
+	if err := s.updateRepo.StoreUpdateSourcemapHash(ctx, update, sourcemap.Hash); err != nil {
+		return nil, err
+	}
+	exists, err := s.sourcemapStore.Exists(ctx, params.AppID, sourcemap.Hash)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		log.Printf("[RequestID: %s] Reusing sourcemap %s already stored", params.RequestID, sourcemap.Hash)
+		return nil, nil
+	}
+	upload, err := s.sourcemapStore.PresignPut(ctx, params.AppID, sourcemap.Hash, params.BranchName)
+	if err != nil {
+		return nil, err
+	}
+	return &bucket.FileUploadRequest{
+		RequestUploadUrl: upload.URL,
+		FileName:         path.Base(sourcemap.Path),
+		FilePath:         sourcemap.Path,
+		OriginalFileName: sourcemap.Path,
+		Hash:             sourcemap.Hash,
+		Headers:          upload.Headers,
+	}, nil
 }
 
 // uploadFiles translates the publish's file list for the storage layer: only
@@ -521,6 +628,16 @@ func (s *DeploymentService) RequestUploadURLs(ctx context.Context, params Reques
 		log.Printf("[RequestID: %s] Error storing update asset mapping: %v", params.RequestID, err)
 		return nil, err
 	}
+	if params.Sourcemap != nil && s.sourcemapStore != nil {
+		sourcemapRequest, err := s.requestSourcemapUpload(ctx, params, *newUpdate)
+		if err != nil {
+			log.Printf("[RequestID: %s] Error requesting sourcemap upload: %v", params.RequestID, err)
+			return nil, err
+		}
+		if sourcemapRequest != nil {
+			updateRequests = append(updateRequests, *sourcemapRequest)
+		}
+	}
 	updateIdInt, _ := strconv.ParseInt(newUpdate.UpdateId, 10, 64)
 
 	return &RequestUploadURLResponse{
@@ -689,6 +806,10 @@ func (s *DeploymentService) republishUpdateInternal(ctx context.Context, previou
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the source update asset mapping: %w", err)
 	}
+	sourcemapHash, err := s.updateRepo.GetUpdateSourcemapHash(ctx, *existing)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the source update sourcemap: %w", err)
+	}
 
 	updateId := update2.GenerateUpdateTimestamp(platform)
 	_, err = s.updateStore.CreateFrom(ctx, previousUpdate, update2.ConvertUpdateTimestampToString(updateId))
@@ -706,9 +827,15 @@ func (s *DeploymentService) republishUpdateInternal(ctx context.Context, previou
 			return nil, fmt.Errorf("failed to store the republished update asset mapping: %w", err)
 		}
 	}
+	if sourcemapHash != nil {
+		if err := s.updateRepo.StoreUpdateSourcemapHash(ctx, *newUpdate, *sourcemapHash); err != nil {
+			return nil, fmt.Errorf("failed to store the republished update sourcemap: %w", err)
+		}
+	}
 	_, err = s.MarkUpdateAsChecked(ctx, *newUpdate, types.NormalUpdate)
 	if err != nil {
 		return nil, err
 	}
+	s.scheduleSourcemapIndex(ctx, *newUpdate, sourcemapHash)
 	return newUpdate, nil
 }

@@ -61,6 +61,8 @@ type ObserveLog struct {
 	EASBuildID     string    `json:"easBuildId"`
 	Environment    string    `json:"environment"`
 	SDKVersion     string    `json:"sdkVersion"`
+	// ErrorFingerprint is empty for a record that is not an error.
+	ErrorFingerprint string `json:"errorFingerprint,omitempty"`
 }
 
 type LogsPage struct {
@@ -221,7 +223,8 @@ func (e *Explorer) ReadLogs(ctx context.Context, appID string, query LogsQuery) 
 				'' AS app_build_number,
 				'' AS eas_build_id,
 				'' AS environment,
-				'' AS sdk_version
+				'' AS sdk_version,
+				toUUID('00000000-0000-0000-0000-000000000000') AS error_fingerprint
 			FROM device_health_events h
 			WHERE ` + nativeWhere + `
 			GROUP BY outbox_id`
@@ -232,7 +235,8 @@ func (e *Explorer) ReadLogs(ctx context.Context, appID string, query LogsQuery) 
 		       branch, channel, runtime_version, platform, toString(session_id),
 		       event_name, severity_number, severity_text, is_fatal, body,
 		       attributes, os_name, os_version, device_model, country_code,
-		       app_version, app_build_number, eas_build_id, environment, sdk_version
+		       app_version, app_build_number, eas_build_id, environment, sdk_version,
+		       toString(error_fingerprint)
 		FROM (
 			SELECT
 				event_key,
@@ -258,7 +262,8 @@ func (e *Explorer) ReadLogs(ctx context.Context, appID string, query LogsQuery) 
 				argMax(app_build_number, ingested_at) AS app_build_number,
 				argMax(eas_build_id, ingested_at) AS eas_build_id,
 				argMax(environment, ingested_at) AS environment,
-				argMax(sdk_version, ingested_at) AS sdk_version
+				argMax(sdk_version, ingested_at) AS sdk_version,
+				argMax(error_fingerprint, ingested_at) AS error_fingerprint
 			FROM (
 				SELECT l.*,
 				       toString(content_key) AS event_key
@@ -291,9 +296,12 @@ func (e *Explorer) ReadLogs(ctx context.Context, appID string, query LogsQuery) 
 			&row.SessionID, &row.EventName, &row.SeverityNumber, &row.SeverityText,
 			&fatal, &row.Body, &row.Attributes, &row.OSName, &row.OSVersion,
 			&row.DeviceModel, &row.CountryCode, &row.AppVersion, &row.AppBuildNumber, &row.EASBuildID,
-			&row.Environment, &row.SDKVersion,
+			&row.Environment, &row.SDKVersion, &row.ErrorFingerprint,
 		); err != nil {
 			return LogsPage{}, err
+		}
+		if row.ErrorFingerprint == ZeroUpdateID {
+			row.ErrorFingerprint = ""
 		}
 		row.IsFatal = fatal == 1
 		page.Logs = append(page.Logs, row)

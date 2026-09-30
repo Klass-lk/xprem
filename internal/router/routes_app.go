@@ -87,6 +87,10 @@ func registerAppRoutes(
 		AnyViewer())
 	app.route(http.MethodPost, "/branch/{BRANCH}/runtimeVersion/{RUNTIME_VERSION}/updates/{UPDATE_ID}/patches/recompute", container.BundlePatchHandler.RecomputeUpdatePatchesHandler,
 		NeedsPermission(rbac.PermUpdatePublish, rbac.FallbackAdminOnly))
+	app.route(http.MethodGet, "/branch/{BRANCH}/runtimeVersion/{RUNTIME_VERSION}/updates/{UPDATE_ID}/sourcemap", container.SourcemapHandler.GetUpdateSourcemapHandler,
+		AnyViewer())
+	app.route(http.MethodPost, "/branch/{BRANCH}/runtimeVersion/{RUNTIME_VERSION}/updates/{UPDATE_ID}/sourcemap/reindex", container.SourcemapHandler.ReindexUpdateSourcemapHandler,
+		NeedsPermission(rbac.PermUpdatePublish, rbac.FallbackAdminOnly))
 	app.route(http.MethodPost, "/branch/{BRANCH}/runtimeVersion/{RUNTIME_VERSION}/rollback", container.UpdateHandler.CreateRollbackHandler,
 		NeedsPermission(rbac.PermUpdatePublish, rbac.FallbackAdminOnly))
 	app.route(http.MethodPost, "/branch/{BRANCH}/runtimeVersion/{RUNTIME_VERSION}/republish", container.UpdateHandler.RepublishUpdateHandler,
@@ -134,6 +138,8 @@ func registerAppRoutes(
 	app.route(http.MethodGet, "/observe/logs", container.ObserveExplorerHandler.GetLogsHandler,
 		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
 	app.route(http.MethodGet, "/observe/breakdown", container.ObserveExplorerHandler.GetBreakdownHandler,
+		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
+	app.route(http.MethodGet, "/observe/errors/{FINGERPRINT}", container.ObserveErrorsHandler.GetErrorGroupHandler,
 		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
 	app.route(http.MethodGet, "/observe/conditions", container.ObserveExplorerHandler.GetConditionsHandler,
 		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))

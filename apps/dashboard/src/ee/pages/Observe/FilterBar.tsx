@@ -6,7 +6,7 @@ import { Fragment } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Check, GitBranch, Pause, Radio, SlidersHorizontal, X } from 'lucide-react';
 import { api } from '@/lib/api';
-import { Combobox } from '@/components/Combobox';
+import { TimeRangePicker } from '@/components/TimeRangePicker';
 import { MultiSelect, MultiTextInput } from './MultiSelect';
 import { useAppPermission } from '@/ee/lib/PermissionsContext';
 import { AttributeFilters } from './AttributeFilters';
@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import apple from '@/assets/apple.svg';
 import android from '@/assets/android.svg';
-import { FilterKey, periods, useObserveFilters } from './filters';
+import { FilterKey, useObserveFilters } from './filters';
 import { deviceName } from './deviceNames';
 import { buildUpdateGroups, groupContext, groupTitle } from './updateGroups';
 import { dimensionCatalog } from './dimensions';
@@ -66,8 +66,8 @@ export const FilterBar = ({
     toggleFilter,
     clearFilters,
     chips,
-    period,
-    setPeriod,
+    range,
+    setRange,
     live,
     setLive,
     applies,
@@ -445,7 +445,14 @@ export const FilterBar = ({
             variant={live ? 'ghost' : 'outline'}
             size="sm"
             aria-pressed={live}
-            title={live ? 'Pause automatic refresh' : 'Refresh automatically'}
+            disabled={range.to !== 'now'}
+            title={
+              range.to !== 'now'
+                ? 'Live needs a range that ends now'
+                : live
+                  ? 'Pause automatic refresh'
+                  : 'Refresh automatically'
+            }
             onClick={() => setLive(!live)}
             className={live ? 'text-emerald-600 dark:text-emerald-400' : ''}>
             {live ? (
@@ -460,11 +467,10 @@ export const FilterBar = ({
               </>
             )}
           </Button>
-          <Combobox
-            className="w-36 sm:w-40"
-            value={period}
-            onChange={value => setPeriod(value as typeof period)}
-            options={periods.map(option => ({ value: option.value, label: option.label }))}
+          <TimeRangePicker
+            value={range}
+            maxRangeMs={filters.maxWindow}
+            onChange={next => next && setRange(next)}
           />
         </div>
       </div>

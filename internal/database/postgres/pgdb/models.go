@@ -254,6 +254,19 @@ type ServerInstance struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type SourcemapIndex struct {
+	BranchID  int64                      `json:"branch_id"`
+	UpdateID  int64                      `json:"update_id"`
+	Hash      string                     `json:"hash"`
+	Status    types.SourcemapIndexStatus `json:"status"`
+	Reason    *string                    `json:"reason"`
+	Segments  *int32                     `json:"segments"`
+	IndexSize *int64                     `json:"index_size"`
+	Attempts  int32                      `json:"attempts"`
+	CreatedAt pgtype.Timestamptz         `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz         `json:"updated_at"`
+}
+
 type SsoConfig struct {
 	Singleton            bool               `json:"singleton"`
 	Issuer               string             `json:"issuer"`
@@ -295,6 +308,7 @@ type Update struct {
 	ControlUpdateID   *int64                    `json:"control_update_id"`
 	PublishGroup      pgtype.UUID               `json:"publish_group"`
 	AssetMapping      *types.UpdateAssetMapping `json:"asset_mapping"`
+	SourcemapHash     *string                   `json:"sourcemap_hash"`
 }
 
 type User struct {

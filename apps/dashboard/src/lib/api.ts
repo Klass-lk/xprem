@@ -630,7 +630,59 @@ export type ObserveLog = {
   easBuildId: string;
   environment: string;
   sdkVersion: string;
+  // Absent for a record that is not an error.
+  errorFingerprint?: string;
 };
+
+// Where a frame of a stack trace comes from, once mapped through the source map.
+export type TraceOrigin = {
+  source: string;
+  line: number;
+  column: number;
+  name?: string;
+  // false for a dependency: a source the map lists as ignored.
+  inApp: boolean;
+  // The lines of code around an in-app frame; firstLine numbers the first one.
+  context?: { firstLine: number; lines: string[] };
+};
+
+// One entry of a symbolicated trace: a frame, or the count of frames the
+// trace left out (skipped). repeat folds a recursion into one entry.
+export type TraceFrame = {
+  function?: string;
+  file?: string;
+  line?: number;
+  column?: number;
+  native?: boolean;
+  repeat?: number;
+  skipped?: number;
+  origin?: TraceOrigin;
+};
+
+export type ErrorGroup = {
+  fingerprint: string;
+  // The same for this error in every update.
+  groupFingerprint: string;
+  errorType: string;
+  message: string;
+  // "LabScreen.tsx in onPress": the first frame of the app's own code.
+  culprit: string;
+  trace: { frames: TraceFrame[] | null };
+  symbolicatedAt: string;
+};
+
+// Why an error has no group yet, or 'ready'. 'waiting' means the source map
+// is indexed and the sweep has not passed yet; both it and 'indexing' resolve
+// on their own.
+export type ErrorGroupStatus =
+  | 'ready'
+  | 'waiting'
+  | 'indexing'
+  | 'index_failed'
+  | 'no_sourcemap'
+  | 'unavailable';
+
+export type ErrorGroupAnswer = { status: ErrorGroupStatus; group?: ErrorGroup };
 
 export type ObserveLogsPage = {
   available: boolean;
@@ -658,10 +710,38 @@ export type UpdateDetailsRecord = {
   expoConfig: string;
   rolloutPercentage?: number | null;
   controlUpdateId?: string | null;
+  // Hash of the bundle's source map in the sourcemap store; absent when the
+  // update was published without one (control-plane only).
+  sourcemapHash?: string | null;
+};
+
+export type SourcemapIndexStatus = 'pending' | 'running' | 'stored' | 'failed' | 'cancelled';
+
+// The index job of an update's source map (enterprise, control-plane only).
+export type SourcemapIndexRecord = {
+  hash: string;
+  status: SourcemapIndexStatus;
+  reason?: string;
+  segments?: number;
+  indexSize?: number;
+  attempts: number;
+  updatedAt: string;
+};
+
+// An update's source map: its hash and, once a job handled it, the index
+// record. index is null for a map no job ever recorded.
+export type UpdateSourcemapRecord = {
+  hash: string | null;
+  index: SourcemapIndexRecord | null;
 };
 
 export type BundlePatchStatus =
-  'pending' | 'running' | 'stored' | 'skipped' | 'failed' | 'cancelled';
+  | 'pending'
+  | 'running'
+  | 'stored'
+  | 'skipped'
+  | 'failed'
+  | 'cancelled';
 
 // One bsdiff patch planned toward a target update from an earlier source
 // update (control-plane only, when bundle diffing is enabled). Sizes are set
@@ -840,6 +920,7 @@ export type ServerSettings = {
   SERVER_VERSION: string;
   CONTROL_PLANE_ENABLED: boolean;
   BUNDLE_DIFFING: boolean;
+  UPLOAD_SOURCEMAPS: boolean;
   CACHE_MODE: string;
   REDIS_HOST: string;
   REDIS_PORT: string;
@@ -1686,6 +1767,13 @@ export class ApiClient {
       method: 'GET',
     });
   }
+  public async getErrorGroup(updateId: string, fingerprint: string) {
+    const search = new URLSearchParams({ updateId });
+    return this.request<ErrorGroupAnswer>(
+      `${this.appScope()}/observe/errors/${encodeURIComponent(fingerprint)}?${search.toString()}`,
+      { method: 'GET' }
+    );
+  }
   public async getObserveLogs(query: ObserveLogsQuery = {}) {
     const search = observeSearchParams(query);
     return this.request<ObserveLogsPage>(`${this.appScope()}/observe/logs?${search.toString()}`, {
@@ -1757,6 +1845,20 @@ export class ApiClient {
   public async recomputeUpdatePatches(branch: string, runtimeVersion: string, updateId: string) {
     return this.request<{ scheduled: number }>(
       `${this.appScope()}/branch/${encodeURIComponent(branch)}/runtimeVersion/${encodeURIComponent(runtimeVersion)}/updates/${encodeURIComponent(updateId)}/patches/recompute`,
+      { method: 'POST' }
+    );
+  }
+
+  public async getUpdateSourcemap(branch: string, runtimeVersion: string, updateId: string) {
+    return this.request<UpdateSourcemapRecord>(
+      `${this.appScope()}/branch/${encodeURIComponent(branch)}/runtimeVersion/${encodeURIComponent(runtimeVersion)}/updates/${encodeURIComponent(updateId)}/sourcemap`,
+      { method: 'GET' }
+    );
+  }
+  // Schedules the index of this update's source map again, as its publish did.
+  public async reindexUpdateSourcemap(branch: string, runtimeVersion: string, updateId: string) {
+    return this.request<{ scheduled: boolean }>(
+      `${this.appScope()}/branch/${encodeURIComponent(branch)}/runtimeVersion/${encodeURIComponent(runtimeVersion)}/updates/${encodeURIComponent(updateId)}/sourcemap/reindex`,
       { method: 'POST' }
     );
   }

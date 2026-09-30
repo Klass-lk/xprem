@@ -97,19 +97,7 @@ func (h *UpdateHandler) GetUpdateDetailsHandler(w http.ResponseWriter, r *http.R
 		handlers.RenderError(w, http.StatusBadRequest, "An internal error occurred while fetching update details.")
 		return
 	}
-	updatesResponse := types.UpdateDetails{
-		UpdateUUID:        update.UpdateUUID,
-		UpdateId:          update.UpdateId,
-		CreatedAt:         update.CreatedAt,
-		CommitHash:        update.CommitHash,
-		Platform:          update.Platform,
-		Message:           update.Message,
-		Type:              update.Type,
-		ExpoConfig:        update.ExpoConfig,
-		RolloutPercentage: update.RolloutPercentage,
-		ControlUpdateId:   update.ControlUpdateId,
-	}
-	marshaledResponse, _ := json.Marshal(updatesResponse)
+	marshaledResponse, _ := json.Marshal(update)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(marshaledResponse)

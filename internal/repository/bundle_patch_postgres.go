@@ -18,7 +18,9 @@ func NewPostgresBundlePatchRepository(engine *database.Engine) *PostgresBundlePa
 	return &PostgresBundlePatchRepository{engine: engine}
 }
 
-func parseUpdateID(name, value string) (int64, error) {
+// ParseUpdateID reads the numeric id an update is keyed by; name says which
+// update in the error.
+func ParseUpdateID(name, value string) (int64, error) {
 	id, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse %s: %w", name, err)
@@ -29,11 +31,11 @@ func parseUpdateID(name, value string) (int64, error) {
 // MarkPending records a patch job about to be scheduled, resetting the pair
 // if it was already handled.
 func (s *PostgresBundlePatchRepository) MarkPending(ctx context.Context, appId, branch, targetUpdateId, sourceUpdateId string) error {
-	targetID, err := parseUpdateID("target update id", targetUpdateId)
+	targetID, err := ParseUpdateID("target update id", targetUpdateId)
 	if err != nil {
 		return err
 	}
-	sourceID, err := parseUpdateID("source update id", sourceUpdateId)
+	sourceID, err := ParseUpdateID("source update id", sourceUpdateId)
 	if err != nil {
 		return err
 	}
@@ -53,11 +55,11 @@ func (s *PostgresBundlePatchRepository) MarkPending(ctx context.Context, appId, 
 }
 
 func (s *PostgresBundlePatchRepository) MarkRunning(ctx context.Context, appId, branch, targetUpdateId, sourceUpdateId string) error {
-	targetID, err := parseUpdateID("target update id", targetUpdateId)
+	targetID, err := ParseUpdateID("target update id", targetUpdateId)
 	if err != nil {
 		return err
 	}
-	sourceID, err := parseUpdateID("source update id", sourceUpdateId)
+	sourceID, err := ParseUpdateID("source update id", sourceUpdateId)
 	if err != nil {
 		return err
 	}
@@ -78,11 +80,11 @@ func (s *PostgresBundlePatchRepository) MarkRunning(ctx context.Context, appId, 
 
 // Finish records how the job ended. reason is empty for a stored patch.
 func (s *PostgresBundlePatchRepository) Finish(ctx context.Context, appId, branch, targetUpdateId, sourceUpdateId string, status types.BundlePatchStatus, reason string, patchSize, fullDownloadSize *int64) error {
-	targetID, err := parseUpdateID("target update id", targetUpdateId)
+	targetID, err := ParseUpdateID("target update id", targetUpdateId)
 	if err != nil {
 		return err
 	}
-	sourceID, err := parseUpdateID("source update id", sourceUpdateId)
+	sourceID, err := ParseUpdateID("source update id", sourceUpdateId)
 	if err != nil {
 		return err
 	}
@@ -111,7 +113,7 @@ func (s *PostgresBundlePatchRepository) Finish(ctx context.Context, appId, branc
 
 // ListByTarget returns the patches toward one update, newest source first.
 func (s *PostgresBundlePatchRepository) ListByTarget(ctx context.Context, appId, branch, targetUpdateId string) ([]types.BundlePatch, error) {
-	targetID, err := parseUpdateID("target update id", targetUpdateId)
+	targetID, err := ParseUpdateID("target update id", targetUpdateId)
 	if err != nil {
 		return nil, err
 	}

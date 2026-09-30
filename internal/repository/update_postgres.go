@@ -56,14 +56,15 @@ func (s *PostgresUpdateRepository) GetUpdateDetails(ctx context.Context, appId s
 		updateUUID = update.UpdateUuid.String()
 	}
 	details := types.UpdateDetails{
-		UpdateUUID: updateUUID,
-		UpdateId:   strconv.FormatInt(update.ID, 10),
-		CreatedAt:  update.CreatedAt.Time.Format(time.RFC3339),
-		CommitHash: update.CommitHash,
-		Platform:   types.Platform(update.Platform),
-		Message:    messageStr,
-		Type:       types.UpdateType(update.UpdateType),
-		ExpoConfig: string(expoConfig),
+		UpdateUUID:    updateUUID,
+		UpdateId:      strconv.FormatInt(update.ID, 10),
+		CreatedAt:     update.CreatedAt.Time.Format(time.RFC3339),
+		CommitHash:    update.CommitHash,
+		Platform:      types.Platform(update.Platform),
+		Message:       messageStr,
+		Type:          types.UpdateType(update.UpdateType),
+		ExpoConfig:    string(expoConfig),
+		SourcemapHash: update.SourcemapHash,
 	}
 	if update.RolloutPercentage != nil {
 		pct := int(*update.RolloutPercentage)
@@ -612,6 +613,45 @@ func (s *PostgresUpdateRepository) GetUpdateAssetMapping(ctx context.Context, up
 		return nil, fmt.Errorf("failed to retrieve update asset mapping from database: %w", err)
 	}
 	return mapping, nil
+}
+
+func (s *PostgresUpdateRepository) GetUpdateSourcemapHash(ctx context.Context, update types.Update) (*string, error) {
+	updateIdInt, err := strconv.ParseInt(update.UpdateId, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse update ID: %w", err)
+	}
+	hash, err := s.engine.Queries.GetUpdateSourcemapHash(ctx, pgdb.GetUpdateSourcemapHashParams{
+		ID:    updateIdInt,
+		AppID: ToPgUUID(update.AppId),
+		Name:  update.Branch,
+	})
+	if err != nil {
+		if database.IsNoRows(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to retrieve update sourcemap hash from database: %w", err)
+	}
+	return hash, nil
+}
+
+func (s *PostgresUpdateRepository) StoreUpdateSourcemapHash(ctx context.Context, update types.Update, hash string) error {
+	updateIdInt, err := strconv.ParseInt(update.UpdateId, 10, 64)
+	if err != nil {
+		return fmt.Errorf("failed to parse update ID: %w", err)
+	}
+	commandTag, err := s.engine.Queries.SetUpdateSourcemapHash(ctx, pgdb.SetUpdateSourcemapHashParams{
+		ID:            updateIdInt,
+		SourcemapHash: &hash,
+		AppID:         ToPgUUID(update.AppId),
+		Name:          update.Branch,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to store update sourcemap hash in database: %w", err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		return fmt.Errorf("no rows were updated when storing the sourcemap hash for update ID %s", update.UpdateId)
+	}
+	return nil
 }
 
 func (s *PostgresUpdateRepository) StoreUpdateAssetMapping(ctx context.Context, update types.Update, mapping *types.UpdateAssetMapping) error {

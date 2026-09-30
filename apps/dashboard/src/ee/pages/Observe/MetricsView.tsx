@@ -256,8 +256,7 @@ const MetricSection = ({
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const breakdownQuery = useQuery({
     queryKey: ['observe', 'breakdown', api.getAppId(), metric.id, dimension, filters.query],
-    queryFn: () =>
-      api.getObserveBreakdown(metric.id, dimension!, filters.query, { points: true }),
+    queryFn: () => api.getObserveBreakdown(metric.id, dimension!, filters.query, { points: true }),
     // No condition gate here: the view no longer renders a card that cannot
     // answer the current split, so a card that exists is one worth asking.
     enabled: dimension != null,
@@ -689,12 +688,16 @@ export const MetricsView = ({ filters }: { filters: ObserveFilters }) => {
   // Publish markers, restricted to the window on screen: one off the left edge
   // would pin itself to the axis and read as a publish that never happened.
   const windowStart = filters.query.from ? new Date(filters.query.from).getTime() : 0;
+  const windowEnd = filters.query.to ? new Date(filters.query.to).getTime() : Infinity;
   const updateGroupMarkers = useMemo(
     () =>
       updateGroups
-        .filter(group => group.createdAt.getTime() >= windowStart)
+        .filter(
+          group =>
+            group.createdAt.getTime() >= windowStart && group.createdAt.getTime() <= windowEnd
+        )
         .map(group => ({ key: group.key, label: groupTitle(group), timestamp: group.createdAt })),
-    [updateGroups, windowStart]
+    [updateGroups, windowStart, windowEnd]
   );
 
   const updateNames = useMemo(() => titlesByUpdateId(updateGroups), [updateGroups]);
@@ -771,6 +774,7 @@ export const MetricsView = ({ filters }: { filters: ObserveFilters }) => {
             breakdownLabel="Update group"
             onBreakdownSelect={selectHealthSeries}
             from={filters.query.from}
+            to={filters.query.to}
             live={filters.live}
           />
         ))
