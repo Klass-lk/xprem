@@ -74,6 +74,24 @@ func TestOpenIndexRefusesForeignFiles(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidIndex)
 }
 
+func TestIndexReadersRejectUnsupportedVersions(t *testing.T) {
+	m, err := Parse([]byte(cartMap))
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	require.NoError(t, WriteIndex(&buf, m))
+	require.Equal(t, uint32(2), le.Uint32(buf.Bytes()[4:]), "new indexes keep format v2")
+	for name, version := range map[string]uint32{"old version": 1, "future version": 3} {
+		t.Run(name, func(t *testing.T) {
+			stored := append([]byte(nil), buf.Bytes()...)
+			le.PutUint32(stored[4:], version)
+			_, err := OpenIndex(bytes.NewReader(stored))
+			assert.ErrorIs(t, err, ErrInvalidIndex)
+			_, err = ReadSegmentCount(bytes.NewReader(stored))
+			assert.ErrorIs(t, err, ErrInvalidIndex)
+		})
+	}
+}
+
 // A synthetic map with many fences: every lookup through the index must
 // agree with a linear scan of the decoded segments.
 func TestLookupAgreesWithLinearScanAcrossFences(t *testing.T) {

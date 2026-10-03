@@ -7,6 +7,7 @@ package symbolication
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 	"xprem/internal/database"
 	"xprem/internal/database/postgres/pgdb"
@@ -24,8 +25,7 @@ type IndexRepository interface {
 	Finish(ctx context.Context, update types.Update, status types.SourcemapIndexStatus, reason string, segments *int, indexSize *int64) error
 	// GetUpdateSourcemap answers nil when the update does not exist.
 	GetUpdateSourcemap(ctx context.Context, appId, branch, runtimeVersion, updateId string) (*UpdateSourcemap, error)
-	// GetUpdateSourcemapByUUID is GetUpdateSourcemap for the UUID a device
-	// reports; only the index status is filled.
+	// GetUpdateSourcemapByUUID includes the update identity and index status.
 	GetUpdateSourcemapByUUID(ctx context.Context, appId, updateUUID string) (*UpdateSourcemap, error)
 }
 
@@ -33,8 +33,9 @@ type IndexRepository interface {
 // the map it carries, nil when it was published without one, and the index
 // record once a job handled it.
 type UpdateSourcemap struct {
-	Hash  *string               `json:"hash"`
-	Index *types.SourcemapIndex `json:"index"`
+	Update types.Update          `json:"-"`
+	Hash   *string               `json:"hash"`
+	Index  *types.SourcemapIndex `json:"index"`
 }
 
 type PostgresIndexRepository struct {
@@ -163,7 +164,10 @@ func (r *PostgresIndexRepository) GetUpdateSourcemapByUUID(ctx context.Context, 
 		}
 		return nil, fmt.Errorf("failed to read the update sourcemap from database: %w", err)
 	}
-	sourcemap := &UpdateSourcemap{Hash: row.SourcemapHash}
+	sourcemap := &UpdateSourcemap{
+		Hash:   row.SourcemapHash,
+		Update: types.Update{AppId: appId, Branch: row.BranchName, RuntimeVersion: row.RuntimeVersion, UpdateId: strconv.FormatInt(row.ID, 10)},
+	}
 	if row.IndexStatus != "" && row.SourcemapHash != nil {
 		sourcemap.Index = &types.SourcemapIndex{Hash: *row.SourcemapHash, Status: row.IndexStatus}
 	}

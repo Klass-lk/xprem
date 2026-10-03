@@ -26,7 +26,7 @@ type IndexOpener interface {
 const (
 	errorGroupsSweepInterval = time.Minute
 	errorGroupsPerSweep      = 200
-	errorGroupsLookback      = 24 * time.Hour
+	errorGroupsLookback      = ErrorsMaxWindow
 	errorGroupsSweepTimeout  = 50 * time.Second
 	errorGroupsWriteEvery    = 20
 )
@@ -47,7 +47,8 @@ func NewErrorGroupsSweep(explorer *Explorer, indexes IndexOpener) *ErrorGroupsSw
 func (s *ErrorGroupsSweep) Run(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, errorGroupsSweepTimeout)
 	defer cancel()
-	since := time.Now().Add(-errorGroupsLookback)
+	// Include the oldest partial ingestion hour.
+	since := time.Now().Add(-errorGroupsLookback).Truncate(time.Hour)
 	known := map[string]error{}
 	symbolicated, skipped := 0, 0
 	var head errorKey

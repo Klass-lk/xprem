@@ -107,9 +107,9 @@ func nativeCrashArm(query LogsQuery, cohort bool) (sqlFragment, []any, bool) {
 		return "", nil, false
 	}
 
-	where := sqlFragment("h.app_id = ? AND h.occurred_at >= ? AND h.occurred_at <= ?" +
+	where := sqlFragment("h.app_id = ? AND h.occurred_at >= fromUnixTimestamp64Nano(?) AND h.occurred_at <= fromUnixTimestamp64Nano(?)" +
 		" AND h.failure_type = ?")
-	args := []any{query.From.UTC(), query.To.UTC(), string(identity.FailureTypeUpdate)}
+	args := []any{query.From.UnixNano(), query.To.UnixNano(), string(identity.FailureTypeUpdate)}
 	inFilter := func(column sqlFragment, values []string) {
 		if len(values) == 0 {
 			return
@@ -166,7 +166,7 @@ func (e *Explorer) ReadLogs(ctx context.Context, appID string, query LogsQuery) 
 		return page, nil
 	}
 	cohort := len(query.MetadataFilter) > 0
-	where, args := telemetryWhere("l", query.ExplorerQuery, cohort)
+	where, args := telemetryWhereNanoseconds("l", query.ExplorerQuery, cohort)
 	if predicate := severityPredicate(query.Severity); predicate != "" {
 		where += " AND " + predicate
 	}
@@ -184,15 +184,15 @@ func (e *Explorer) ReadLogs(ctx context.Context, appID string, query LogsQuery) 
 	var outerWhere sqlFragment
 	var outerArgs []any
 	if query.Cursor != nil {
-		where += " AND l.timestamp <= ?"
-		args = append(args, query.Cursor.Timestamp.UTC())
-		outerWhere = "WHERE timestamp < ? OR (timestamp = ? AND event_key < ?)"
-		outerArgs = []any{query.Cursor.Timestamp.UTC(), query.Cursor.Timestamp.UTC(), query.Cursor.EventKey}
+		where += " AND l.timestamp <= fromUnixTimestamp64Nano(?)"
+		args = append(args, query.Cursor.Timestamp.UnixNano())
+		outerWhere = "WHERE timestamp < fromUnixTimestamp64Nano(?) OR (timestamp = fromUnixTimestamp64Nano(?) AND event_key < ?)"
+		outerArgs = []any{query.Cursor.Timestamp.UnixNano(), query.Cursor.Timestamp.UnixNano(), query.Cursor.EventKey}
 	}
 	nativeWhere, nativeArgs, withNative := nativeCrashArm(query, cohort)
 	if withNative && query.Cursor != nil {
-		nativeWhere += " AND h.occurred_at <= ?"
-		nativeArgs = append(nativeArgs, query.Cursor.Timestamp.UTC())
+		nativeWhere += " AND h.occurred_at <= fromUnixTimestamp64Nano(?)"
+		nativeArgs = append(nativeArgs, query.Cursor.Timestamp.UnixNano())
 	}
 	var nativeSQL sqlFragment
 	if withNative {

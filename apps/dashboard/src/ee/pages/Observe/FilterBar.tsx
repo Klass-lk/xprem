@@ -314,7 +314,7 @@ export const FilterBar = ({
           </PopoverTrigger>
           <PopoverContent
             align="start"
-            className="max-h-[min(70vh,40rem)] w-[min(34rem,calc(100vw-2rem))] space-y-4 overflow-y-auto">
+            className="observe-workspace max-h-[min(70vh,40rem)] w-[min(34rem,calc(100vw-2rem))] space-y-4 overflow-y-auto">
             <div>
               <h2 className="text-sm font-semibold">Narrow the audience</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
@@ -440,7 +440,7 @@ export const FilterBar = ({
           </PopoverContent>
         </Popover>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex w-full min-w-0 max-w-full items-center gap-2 sm:w-auto">
           <Button
             variant={live ? 'ghost' : 'outline'}
             size="sm"
@@ -468,6 +468,8 @@ export const FilterBar = ({
             )}
           </Button>
           <TimeRangePicker
+            className="min-w-0 flex-1"
+            popoverClassName="observe-workspace"
             value={range}
             maxRangeMs={filters.maxWindow}
             onChange={next => next && setRange(next)}

@@ -1,5 +1,6 @@
 // A time range as people type it: each end is either relative to now
-// ("now", "now-7d") or an absolute local date ("2026-09-27 14:00").
+// ("now", "now-7d"), an absolute local date ("2026-09-27 14:00"),
+// or an RFC3339 timestamp returned by the API for a shareable frozen window.
 export type TimeRange = { from: string; to: string };
 
 export const defaultRange: TimeRange = { from: 'now-24h', to: 'now' };
@@ -9,6 +10,9 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 const unitMs: Record<string, number> = { m: MINUTE, h: HOUR, d: DAY, w: 7 * DAY };
+
+const zonedTimePattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/;
 
 export const quickRanges: Array<TimeRange & { label: string }> = [
   { from: 'now-5m', to: 'now', label: 'Last 5 minutes' },
@@ -42,6 +46,33 @@ export const parseTimeExpression = (expression: string, now: number): Date | nul
     const date = new Date(now - Number(relative[1]) * unitMs[relative[2]]);
     return Number.isNaN(date.getTime()) ? null : date;
   }
+  // Parse zoned API timestamps separately from browser-local input.
+  const zoned = zonedTimePattern.exec(text);
+  if (zoned) {
+    const [, year, month, day, hours, minutes, seconds, fraction = '', zone] = zoned;
+    const milliseconds = Number(fraction.padEnd(3, '0').slice(0, 3));
+    const date = new Date(0);
+    date.setUTCFullYear(Number(year), Number(month) - 1, Number(day));
+    date.setUTCHours(Number(hours), Number(minutes), Number(seconds), milliseconds);
+    // Date normalizes invalid dates and hours; reject them instead.
+    if (
+      date.getUTCFullYear() !== Number(year) ||
+      date.getUTCMonth() !== Number(month) - 1 ||
+      date.getUTCDate() !== Number(day) ||
+      date.getUTCHours() !== Number(hours) ||
+      date.getUTCMinutes() !== Number(minutes) ||
+      date.getUTCSeconds() !== Number(seconds)
+    )
+      return null;
+    if (zone !== 'Z') {
+      const offsetHours = Number(zone.slice(1, 3));
+      const offsetMinutes = Number(zone.slice(4, 6));
+      if (offsetHours > 23 || offsetMinutes > 59) return null;
+      const offset = (offsetHours * HOUR + offsetMinutes * MINUTE) * (zone[0] === '+' ? 1 : -1);
+      date.setTime(date.getTime() - offset);
+    }
+    return date;
+  }
   // "2026-09-27 14:00" and "2026-09-27" read as local time, like the fields show them.
   const absolute = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
   if (!absolute) return null;
@@ -64,6 +95,10 @@ export const parseTimeExpression = (expression: string, now: number): Date | nul
     date.getSeconds() === Number(seconds);
   return exact ? date : null;
 };
+
+// Preserve the original bound on the wire; Date truncates API nanoseconds.
+export const isZonedAbsolute = (expression: string) =>
+  zonedTimePattern.test(expression.trim()) && parseTimeExpression(expression, 0) !== null;
 
 // Both ends as dates; null when either end does not read or they are out of order.
 export const resolveRange = (range: TimeRange, now: number) => {

@@ -39,16 +39,24 @@ var (
 // maxMapSize bounds what one job decodes in memory.
 const maxMapSize = 128 << 20
 
+type indexJobQueue interface {
+	Enqueue(ctx context.Context, args river.JobArgs) (string, error)
+}
+
 type Service struct {
 	store        IndexStore
 	indexes      IndexRepository
-	jobs         *jobs.Client
+	jobs         indexJobQueue
 	cache        *indexCache
 	licenseValid func() bool
 }
 
 func NewService(store IndexStore, indexes IndexRepository, jobsClient *jobs.Client) *Service {
-	return &Service{store: store, indexes: indexes, jobs: jobsClient, cache: newIndexCache(), licenseValid: licensing.IsEnterprise}
+	var queue indexJobQueue
+	if jobsClient != nil {
+		queue = jobsClient
+	}
+	return &Service{store: store, indexes: indexes, jobs: queue, cache: newIndexCache(), licenseValid: licensing.IsEnterprise}
 }
 
 // available is nil-safe: the handler is wired even when indexing is not.
@@ -236,7 +244,7 @@ func (s *Service) buildIndex(ctx context.Context, appId, hash string, rebuild bo
 		}
 		if exists {
 			outcome, err := s.existingIndex(ctx, appId, hash)
-			// An index of an older format is written again.
+			// An index of an unsupported format is written again.
 			if !errors.Is(err, ErrInvalidIndex) {
 				return outcome, err
 			}
@@ -300,10 +308,11 @@ func (s *Service) OpenUpdateIndex(ctx context.Context, appId, updateUUID string)
 	if !s.available() {
 		return nil, ErrUnavailable
 	}
-	hash, err := s.storedIndexHash(ctx, appId, updateUUID)
+	sourcemap, err := s.storedUpdateSourcemap(ctx, appId, updateUUID)
 	if err != nil {
 		return nil, err
 	}
+	hash := *sourcemap.Hash
 	if index, ok := s.cache.get(appId + "/" + hash); ok {
 		return index, nil
 	}
@@ -312,7 +321,7 @@ func (s *Service) OpenUpdateIndex(ctx context.Context, appId, updateUUID string)
 		return nil, fmt.Errorf("reading the index of map %s: %w", hash, err)
 	}
 	if file == nil {
-		return nil, ErrIndexNotReady
+		return nil, s.repairIndex(ctx, sourcemap)
 	}
 	defer file.Reader.Close()
 	data, err := io.ReadAll(io.LimitReader(file.Reader, maxIndexCacheBytes+1))
@@ -324,41 +333,44 @@ func (s *Service) OpenUpdateIndex(ctx context.Context, appId, updateUUID string)
 	}
 	index, err := s.cache.put(appId+"/"+hash, data)
 	if errors.Is(err, ErrInvalidIndex) {
-		return nil, fmt.Errorf("%w: %v", ErrIndexFailed, err)
+		return nil, s.repairIndex(ctx, sourcemap)
 	}
 	return index, err
 }
 
-// UpdateIndexState is OpenUpdateIndex's answer without opening anything: nil
-// when the index is ready to use.
-func (s *Service) UpdateIndexState(ctx context.Context, appId, updateUUID string) error {
-	if !s.available() {
-		return ErrUnavailable
+func (s *Service) repairIndex(ctx context.Context, sourcemap *UpdateSourcemap) error {
+	err := s.scheduleIndex(ctx, sourcemap.Update, *sourcemap.Hash, true)
+	if err != nil && !errors.Is(err, jobs.ErrAlreadyRunning) {
+		return err
 	}
-	_, err := s.storedIndexHash(ctx, appId, updateUUID)
+	return ErrIndexNotReady
+}
+
+// UpdateIndexState verifies the stored index and queues a rebuild if needed.
+func (s *Service) UpdateIndexState(ctx context.Context, appId, updateUUID string) error {
+	_, err := s.OpenUpdateIndex(ctx, appId, updateUUID)
 	return err
 }
 
-// storedIndexHash is the hash of the update's map once its index is stored.
-func (s *Service) storedIndexHash(ctx context.Context, appId, updateUUID string) (string, error) {
+func (s *Service) storedUpdateSourcemap(ctx context.Context, appId, updateUUID string) (*UpdateSourcemap, error) {
 	sourcemap, err := s.indexes.GetUpdateSourcemapByUUID(ctx, appId, updateUUID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if sourcemap == nil {
-		return "", ErrUpdateNotFound
+		return nil, ErrUpdateNotFound
 	}
 	if sourcemap.Hash == nil {
-		return "", ErrNoSourcemap
+		return nil, ErrNoSourcemap
 	}
 	if sourcemap.Index == nil {
-		return "", ErrIndexNotReady
+		return nil, ErrIndexNotReady
 	}
 	switch sourcemap.Index.Status {
 	case types.SourcemapIndexStored:
-		return *sourcemap.Hash, nil
+		return sourcemap, nil
 	case types.SourcemapIndexFailed, types.SourcemapIndexCancelled:
-		return "", ErrIndexFailed
+		return nil, ErrIndexFailed
 	}
-	return "", ErrIndexNotReady
+	return nil, ErrIndexNotReady
 }

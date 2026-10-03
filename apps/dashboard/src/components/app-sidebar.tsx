@@ -37,6 +37,7 @@ import { useSettings } from '@/lib/SettingsContext';
 import { useCurrentUser } from '@/lib/CurrentUserContext';
 import { EnterpriseBadge } from '@/ee/components/EnterpriseBadge';
 import { observeNavigation } from '@/ee/pages/Observe/navigation';
+import { errorsListHref } from '@/ee/pages/Observe/errorNavigation';
 import { ThemePreference, useTheme } from '@/lib/theme';
 
 const NavLink = ({
@@ -144,13 +145,20 @@ const ObserveNav = ({
   onNavigate?: () => void;
   showEnterpriseBadges: boolean;
 }) => {
-  const { pathname, search } = useLocation();
+  const { pathname, search, state } = useLocation();
   const isActive = pathname === '/observe' || pathname.startsWith('/observe/');
 
   // Filters, period and live state all live in the query string. Carrying it
   // across sub-pages is the whole point: you narrow to a branch once, then
   // walk performance, events and logs on that same slice.
-  const carried = isActive ? search : '';
+  const params = new URLSearchParams(isActive ? search : '');
+  params.delete('errorId');
+  const queryString = params.toString();
+  const carried = queryString ? `?${queryString}` : '';
+  const errorsReturn =
+    pathname.startsWith('/observe/errors/') && typeof state?.errorsSearch === 'string'
+      ? errorsListHref(new URLSearchParams(state.errorsSearch))
+      : null;
 
   return (
     <ExpandableSection
@@ -162,7 +170,11 @@ const ObserveNav = ({
       {observeNavigation.map(page => (
         <SubNavLink
           key={page.value}
-          to={`/observe/${page.value}${carried}`}
+          to={
+            page.value === 'errors' && errorsReturn
+              ? errorsReturn
+              : `/observe/${page.value}${carried}`
+          }
           icon={page.icon}
           title={page.question}
           badge={page.enterprise && showEnterpriseBadges ? <EnterpriseNavBadge /> : undefined}

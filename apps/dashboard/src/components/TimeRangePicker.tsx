@@ -165,6 +165,7 @@ export const TimeRangePicker = ({
   allowAllTime = false,
   maxRangeMs = Infinity,
   className,
+  popoverClassName,
 }: {
   value: TimeRange | null;
   onChange: (range: TimeRange | null) => void;
@@ -172,6 +173,7 @@ export const TimeRangePicker = ({
   // The widest range the data behind the picker can be asked for.
   maxRangeMs?: number;
   className?: string;
+  popoverClassName?: string;
 }) => {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<TimeRange>(defaultRange);
@@ -234,13 +236,16 @@ export const TimeRangePicker = ({
         <PopoverTrigger asChild>
           <button
             type="button"
+            title={label}
             className="flex h-9 min-w-0 flex-1 items-center gap-2 px-3 text-sm hover:bg-accent">
             <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span className="truncate whitespace-nowrap tabular-nums">{label}</span>
             <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
           </button>
         </PopoverTrigger>
-        <PopoverContent align="end" className="w-[min(600px,calc(100vw-32px))] p-0">
+        <PopoverContent
+          align="end"
+          className={cn('w-[min(600px,calc(100vw-32px))] p-0', popoverClassName)}>
           <div className="grid sm:grid-cols-2">
             <div className="space-y-3 border-b p-4 sm:border-b-0 sm:border-r">
               <p className="text-sm font-medium">Absolute time range</p>
