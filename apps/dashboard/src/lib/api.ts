@@ -255,6 +255,7 @@ export type UpdateFeedQuery = {
   branch?: string;
   runtimeVersion?: string;
   platform?: string;
+  latestOnly?: boolean;
   uuid?: string;
   groupId?: string;
   commitHash?: string;
@@ -316,23 +317,6 @@ export type UpdateHealthHistoryPoint = {
   updateIssues: number;
   runtimeIssues: number;
   healthPercent: number | null;
-};
-
-// Same curves, split by a device dimension. Keys are segment values instead
-// of update ids, rebuilt from the raw health events since the snapshots are
-// pre-aggregated per update.
-export type UpdateHealthSegmentPoint = {
-  timestamp: string;
-  devicesOnUpdate: number;
-  successfulDevices: number;
-  faultyDevices: number;
-  healthPercent: number | null;
-};
-
-export type UpdateHealthSegmentsResponse = {
-  available: boolean;
-  dimension: string;
-  segments: Record<string, UpdateHealthSegmentPoint[]>;
 };
 
 // What PostgreSQL alone can reconstruct, served when the deployment runs no
@@ -562,6 +546,45 @@ export type ObserveMetric = {
   points: Array<{ timestamp: string; value: number }>;
 };
 
+// The active device registry split along one dimension. An empty value is one
+// the registry has not recorded; `others` folds every value past the list.
+export type ObserveFleetDimension =
+  | 'channel'
+  | 'runtimeVersion'
+  | 'update'
+  | 'platform'
+  | 'appVersion'
+  | 'deviceModel'
+  | 'osVersion'
+  | 'country';
+
+export type ObserveFleetFacet = {
+  dimension: ObserveFleetDimension;
+  // `context` is the OS name of an OS version, or 'group' / 'update' for an update.
+  values: Array<{ value: string; context?: string; devices: number }>;
+  others: number;
+  otherValues: number;
+};
+
+export type ObserveFleet = {
+  available: boolean;
+  devices: number;
+  embeddedDevices: number;
+  facets: ObserveFleetFacet[];
+};
+
+export type ObserveChannelAdoption = {
+  channel: string;
+  activeDevices: number;
+  embeddedDevices: number;
+  upToDateDevices: number;
+};
+
+export type ObserveReleases = {
+  available: boolean;
+  channels: ObserveChannelAdoption[];
+};
+
 export type ObserveOverview = {
   available: boolean;
   summary: {
@@ -732,6 +755,18 @@ export type ObserveErrorsPage = {
   offset: number;
   hasMore: boolean;
   errors: ErrorSummary[];
+};
+export type UpdateErrorSummary = ErrorSummary & {
+  // Unknown until symbolication allows the error to be matched across updates.
+  new: boolean | null;
+};
+export type UpdateErrorsPage = {
+  available: boolean;
+  updateId: string;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  errors: UpdateErrorSummary[];
 };
 export type ErrorBreakdownSegment = {
   key: string;
@@ -1756,24 +1791,6 @@ export class ApiClient {
       }
     );
   }
-  // Its own route, not a mode of getUpdateHealthHistory below. Splitting the
-  // window by a device dimension reads different data and needs observe:read,
-  // while the plain series is open to anyone who can see the app because the
-  // updates table and the rollout card both draw it.
-  public async getUpdateHealthSegments(
-    updateUUIDs: string[],
-    dimension: string,
-    from?: string,
-    to?: string
-  ) {
-    const search = new URLSearchParams({ ids: updateUUIDs.join(','), dimension });
-    if (from) search.set('from', from);
-    if (to) search.set('to', to);
-    return this.request<UpdateHealthSegmentsResponse>(
-      `${this.appScope()}/observe/update-health/segments?${search.toString()}`,
-      { method: 'GET' }
-    );
-  }
   public async getUpdateHealthHistory(updateUUIDs: string[], from?: string, to?: string) {
     const search = new URLSearchParams({ ids: updateUUIDs.join(',') });
     if (from) search.set('from', from);
@@ -1819,6 +1836,18 @@ export class ApiClient {
       { method: 'GET' }
     );
   }
+  public async getObserveFleet(query: ObserveQuery = {}) {
+    return this.request<ObserveFleet>(
+      `${this.appScope()}/observe/fleet?${observeSearchParams(query).toString()}`,
+      { method: 'GET' }
+    );
+  }
+  public async getObserveReleases(query: ObserveQuery = {}) {
+    return this.request<ObserveReleases>(
+      `${this.appScope()}/observe/releases?${observeSearchParams(query).toString()}`,
+      { method: 'GET' }
+    );
+  }
   // The live feed behind the map. `since` is the cursor the server handed back
   // last time, never a locally computed timestamp: the browser clock has no
   // say in where the window starts.
@@ -1854,6 +1883,15 @@ export class ApiClient {
     return this.request<ObserveErrorsPage>(`${this.appScope()}/observe/errors?${search}`, {
       method: 'GET',
     });
+  }
+  public async getUpdateErrors(updateId: string, query: { limit?: number; offset?: number } = {}) {
+    const search = new URLSearchParams();
+    if (query.limit !== undefined) search.set('limit', String(query.limit));
+    if (query.offset !== undefined) search.set('offset', String(query.offset));
+    return this.request<UpdateErrorsPage>(
+      `${this.appScope()}/observe/updates/${encodeURIComponent(updateId)}/errors?${search}`,
+      { method: 'GET' }
+    );
   }
   public async getObserveErrorDetails(errorId: string, query: ObserveErrorDetailsQuery = {}) {
     const search = observeSearchParams(query);

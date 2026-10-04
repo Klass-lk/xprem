@@ -710,6 +710,59 @@ func TestTouchDeviceRegistersAndBumps(t *testing.T) {
 	require.Empty(t, bumped.Metadata)
 }
 
+func TestTouchDeviceChannel(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	deviceID := uuid.NewString()
+	channel := func() *string {
+		var name *string
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT channel_name FROM device_identity WHERE app_id = $1 AND eas_client_id = $2`,
+			appID, deviceID).Scan(&name))
+		return name
+	}
+
+	// A device on its embedded bundle runs no known update and still gets its channel.
+	embedded := &CurrentUpdate{ID: uuid.NewString()}
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, embedded, DeviceInfo{Channel: "production"}))
+	require.Equal(t, "production", *channel())
+
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil, DeviceInfo{Model: "iPhone17,3"}))
+	require.Equal(t, "production", *channel())
+
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, embedded, DeviceInfo{Channel: "staging"}))
+	require.Equal(t, "staging", *channel())
+}
+
+func TestTouchDeviceDeclaredRelease(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	deviceID := uuid.NewString()
+	release := func() (runtimeVersion, platform *string) {
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT runtime_version, platform FROM device_identity WHERE app_id = $1 AND eas_client_id = $2`,
+			appID, deviceID).Scan(&runtimeVersion, &platform))
+		return runtimeVersion, platform
+	}
+	declared := DeviceInfo{Platform: "android", RuntimeVersion: "3.0.0"}
+
+	// The embedded bundle resolves to no update, so the device's own declaration fills in.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, observed(uuid.NewString()), declared))
+	runtimeVersion, platform := release()
+	require.Equal(t, "3.0.0", *runtimeVersion)
+	require.Equal(t, "android", *platform)
+
+	// A published update wins over the declaration.
+	updateID := uuid.NewString()
+	seedPublishedUpdate(t, pool, appID, updateID)
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, observed(updateID), declared))
+	runtimeVersion, platform = release()
+	require.Equal(t, "health-"+updateID[:8], *runtimeVersion)
+	require.Equal(t, "ios", *platform)
+}
+
 func TestTouchDeviceGeoCoalesce(t *testing.T) {
 	store, pool := setupIdentityStore(t)
 	appID := seedApp(t, pool)

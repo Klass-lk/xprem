@@ -26,7 +26,8 @@ export type ObservePage = 'overview' | 'metrics' | 'errors' | 'events' | 'device
 // 'timings' is the narrowest of them: the state a device reported for one
 // measurement lives on the metric data point alone, so only the page drawing
 // those timings can honor a filter on it.
-export type FilterScope = 'telemetry' | 'timings' | 'updateGroups' | 'devices' | 'none';
+// 'fleet' is the registry as the Overview reads it, which also knows each device's channel and store version.
+export type FilterScope = 'telemetry' | 'timings' | 'updateGroups' | 'devices' | 'fleet' | 'none';
 
 export const observeNavigation: Array<{
   value: ObservePage;
@@ -54,13 +55,13 @@ export const observeNavigation: Array<{
     label: 'Overview',
     question: 'Is the app healthy right now?',
     icon: ChartNoAxesCombined,
-    scopes: ['telemetry'],
+    scopes: ['fleet'],
   },
   {
     value: 'metrics',
     permission: 'observe:read',
     label: 'Metrics',
-    question: 'Is the served update group healthy, and is the app fast for everyone?',
+    question: 'Is the app fast for everyone?',
     icon: Gauge,
     scopes: ['telemetry', 'timings'],
   },

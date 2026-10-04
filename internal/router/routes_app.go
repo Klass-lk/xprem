@@ -131,6 +131,10 @@ func registerAppRoutes(
 
 	app.route(http.MethodGet, "/observe/overview", container.ObserveExplorerHandler.GetOverviewHandler,
 		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
+	app.route(http.MethodGet, "/observe/fleet", container.ObserveExplorerHandler.GetFleetHandler,
+		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
+	app.route(http.MethodGet, "/observe/releases", container.ObserveExplorerHandler.GetReleasesHandler,
+		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
 	app.route(http.MethodGet, "/observe/check-ins", container.ObserveExplorerHandler.GetCheckInsHandler,
 		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
 	app.route(http.MethodGet, "/observe/events", container.ObserveExplorerHandler.GetEventsHandler,
@@ -140,6 +144,8 @@ func registerAppRoutes(
 	app.route(http.MethodGet, "/observe/breakdown", container.ObserveExplorerHandler.GetBreakdownHandler,
 		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
 	app.route(http.MethodGet, "/observe/errors", container.ObserveExplorerHandler.GetErrorsHandler,
+		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
+	app.route(http.MethodGet, "/observe/updates/{UPDATE_ID}/errors", container.ObserveExplorerHandler.GetUpdateErrorsHandler,
 		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))
 	app.route(http.MethodGet, "/observe/errors/groups/{ERROR_ID}", container.ObserveExplorerHandler.GetErrorDetailsHandler,
 		NeedsPermission(rbac.PermObserveRead, rbac.FallbackAnyMember))

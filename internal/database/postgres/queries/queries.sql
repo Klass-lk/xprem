@@ -1607,6 +1607,107 @@ WHERE d.app_id = $1
   AND (coalesce(cardinality(sqlc.arg('runtime_version')::text[]), 0) = 0 OR d.runtime_version = ANY(sqlc.arg('runtime_version')::text[]))
   AND (coalesce(cardinality(sqlc.arg('platform')::text[]), 0) = 0 OR d.platform = ANY(sqlc.arg('platform')::text[]));
 
+-- How the active fleet splits along each release and hardware dimension, every
+-- dimension counted over the same filtered set. '' is "not recorded".
+-- name: ListObserveFleetFacets :many
+WITH fleet AS MATERIALIZED (
+    SELECT d.channel_name, d.runtime_version, d.platform, d.publish_group, d.current_update_id,
+           d.app_version, d.device_model, d.os_name, d.os_version, d.country_code
+    FROM device_identity d
+    WHERE d.app_id = $1
+      AND d.last_seen_at >= sqlc.arg(active_since)::timestamptz
+      AND (coalesce(cardinality(sqlc.arg('filters')::jsonb[]), 0) = 0 OR d.metadata @> ANY(sqlc.arg('filters')::jsonb[]))
+      AND (coalesce(cardinality(sqlc.arg('eas_client_id')::uuid[]), 0) = 0 OR d.eas_client_id = ANY(sqlc.arg('eas_client_id')::uuid[]))
+      AND (coalesce(cardinality(sqlc.arg('current_update_id')::uuid[]), 0) = 0 OR d.current_update_id = ANY(sqlc.arg('current_update_id')::uuid[]))
+      AND (coalesce(cardinality(sqlc.arg('publish_group')::uuid[]), 0) = 0 OR d.publish_group = ANY(sqlc.arg('publish_group')::uuid[]))
+      AND (coalesce(cardinality(sqlc.arg('device_model')::text[]), 0) = 0 OR d.device_model = ANY(sqlc.arg('device_model')::text[]))
+      AND (coalesce(cardinality(sqlc.arg('os_name')::text[]), 0) = 0 OR d.os_name = ANY(sqlc.arg('os_name')::text[]))
+      AND (coalesce(cardinality(sqlc.arg('os_version')::text[]), 0) = 0 OR d.os_version = ANY(sqlc.arg('os_version')::text[]))
+      AND (coalesce(cardinality(sqlc.arg('country_code')::text[]), 0) = 0 OR d.country_code = ANY(sqlc.arg('country_code')::text[]))
+      AND (coalesce(cardinality(sqlc.arg('branch')::text[]), 0) = 0 OR d.branch_name = ANY(sqlc.arg('branch')::text[]))
+      AND (coalesce(cardinality(sqlc.arg('runtime_version')::text[]), 0) = 0 OR d.runtime_version = ANY(sqlc.arg('runtime_version')::text[]))
+      AND (coalesce(cardinality(sqlc.arg('platform')::text[]), 0) = 0 OR d.platform = ANY(sqlc.arg('platform')::text[]))
+      AND (coalesce(cardinality(sqlc.arg('channel')::text[]), 0) = 0 OR d.channel_name = ANY(sqlc.arg('channel')::text[]))
+      AND (coalesce(cardinality(sqlc.arg('app_version')::text[]), 0) = 0 OR d.app_version = ANY(sqlc.arg('app_version')::text[]))
+)
+SELECT 'channel'::text AS dimension, COALESCE(channel_name, '')::text AS value, ''::text AS context, COUNT(*) AS devices
+FROM fleet GROUP BY 2
+UNION ALL
+SELECT 'runtimeVersion', COALESCE(runtime_version, ''), '', COUNT(*) FROM fleet GROUP BY 2
+UNION ALL
+-- A publish when it has one, its lone update otherwise; context says which, '' is no known update.
+SELECT 'update', COALESCE(publish_group::text, current_update_id::text, ''),
+       CASE WHEN publish_group IS NOT NULL THEN 'group' WHEN current_update_id IS NOT NULL THEN 'update' ELSE '' END,
+       COUNT(*)
+FROM fleet GROUP BY 2, 3
+UNION ALL
+SELECT 'platform', COALESCE(platform, ''), '', COUNT(*) FROM fleet GROUP BY 2
+UNION ALL
+SELECT 'appVersion', COALESCE(app_version, ''), '', COUNT(*) FROM fleet GROUP BY 2
+UNION ALL
+SELECT 'deviceModel', COALESCE(device_model, ''), '', COUNT(*) FROM fleet GROUP BY 2
+UNION ALL
+SELECT 'osVersion', COALESCE(os_version, ''), COALESCE(os_name, ''), COUNT(*) FROM fleet GROUP BY 2, 3
+UNION ALL
+SELECT 'country', COALESCE(country_code, ''), '', COUNT(*) FROM fleet GROUP BY 2;
+
+-- Per channel, the active devices and how many already run what that channel
+-- serves them: the newest update of its branch (or rollout branch) for their
+-- runtime and platform, or the control an update rollout keeps them on.
+-- name: ListObserveChannelAdoption :many
+WITH served AS (
+    SELECT ch.name AS channel_name, ch.branch_id FROM channels ch WHERE ch.app_id = $1
+    UNION ALL
+    SELECT ch.name, cr.rollout_branch_id
+    FROM channels ch JOIN channel_rollouts cr ON cr.channel_id = ch.id
+    WHERE ch.app_id = $1
+),
+newest AS (
+    SELECT DISTINCT ON (u.branch_id, u.runtime_version_id, u.platform)
+           u.branch_id, rv.version AS runtime_version, u.platform,
+           u.update_uuid, u.update_type,
+           c.update_uuid AS control_uuid, c.update_type AS control_type
+    FROM updates u
+    JOIN branches b ON b.id = u.branch_id AND b.app_id = $1
+    JOIN runtime_versions rv ON rv.id = u.runtime_version_id
+    LEFT JOIN updates c ON c.branch_id = u.branch_id AND c.id = u.control_update_id
+        AND u.rollout_percentage IS NOT NULL
+    WHERE u.checked_at IS NOT NULL
+      AND u.branch_id IN (SELECT branch_id FROM served)
+    ORDER BY u.branch_id, u.runtime_version_id, u.platform, u.id DESC
+)
+SELECT d.channel_name::text AS channel_name,
+       COUNT(*) AS active_devices,
+       COUNT(*) FILTER (WHERE d.current_update_id IS NULL) AS embedded_devices,
+       COUNT(*) FILTER (WHERE EXISTS (
+           SELECT 1 FROM served s
+           JOIN newest n ON n.branch_id = s.branch_id
+           WHERE s.channel_name = d.channel_name
+             AND n.runtime_version = d.runtime_version
+             AND n.platform = d.platform
+             AND (d.current_update_id IN (n.update_uuid, n.control_uuid)
+                  OR (d.current_update_id IS NULL AND (n.update_type = 1 OR n.control_type = 1)))
+       )) AS up_to_date_devices
+FROM device_identity d
+WHERE d.app_id = $1
+  AND d.last_seen_at >= sqlc.arg(active_since)::timestamptz
+  AND d.channel_name IS NOT NULL
+  AND (coalesce(cardinality(sqlc.arg('filters')::jsonb[]), 0) = 0 OR d.metadata @> ANY(sqlc.arg('filters')::jsonb[]))
+  AND (coalesce(cardinality(sqlc.arg('eas_client_id')::uuid[]), 0) = 0 OR d.eas_client_id = ANY(sqlc.arg('eas_client_id')::uuid[]))
+  AND (coalesce(cardinality(sqlc.arg('current_update_id')::uuid[]), 0) = 0 OR d.current_update_id = ANY(sqlc.arg('current_update_id')::uuid[]))
+  AND (coalesce(cardinality(sqlc.arg('publish_group')::uuid[]), 0) = 0 OR d.publish_group = ANY(sqlc.arg('publish_group')::uuid[]))
+  AND (coalesce(cardinality(sqlc.arg('device_model')::text[]), 0) = 0 OR d.device_model = ANY(sqlc.arg('device_model')::text[]))
+  AND (coalesce(cardinality(sqlc.arg('os_name')::text[]), 0) = 0 OR d.os_name = ANY(sqlc.arg('os_name')::text[]))
+  AND (coalesce(cardinality(sqlc.arg('os_version')::text[]), 0) = 0 OR d.os_version = ANY(sqlc.arg('os_version')::text[]))
+  AND (coalesce(cardinality(sqlc.arg('country_code')::text[]), 0) = 0 OR d.country_code = ANY(sqlc.arg('country_code')::text[]))
+  AND (coalesce(cardinality(sqlc.arg('branch')::text[]), 0) = 0 OR d.branch_name = ANY(sqlc.arg('branch')::text[]))
+  AND (coalesce(cardinality(sqlc.arg('runtime_version')::text[]), 0) = 0 OR d.runtime_version = ANY(sqlc.arg('runtime_version')::text[]))
+  AND (coalesce(cardinality(sqlc.arg('platform')::text[]), 0) = 0 OR d.platform = ANY(sqlc.arg('platform')::text[]))
+  AND (coalesce(cardinality(sqlc.arg('channel')::text[]), 0) = 0 OR d.channel_name = ANY(sqlc.arg('channel')::text[]))
+  AND (coalesce(cardinality(sqlc.arg('app_version')::text[]), 0) = 0 OR d.app_version = ANY(sqlc.arg('app_version')::text[]))
+GROUP BY d.channel_name
+ORDER BY active_devices DESC, d.channel_name;
+
 -- Resolve an EAS publish group to the concrete update UUIDs stored on
 -- telemetry rows. A publish group can contain one update per platform.
 -- name: ListObserveUpdateUUIDsByPublishGroup :many
@@ -1753,10 +1854,14 @@ UPDATE device_identity SET
     -- keeps what the last one established.
     branch_name = CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL
         THEN device_identity.branch_name ELSE (SELECT o.branch_name FROM origin o) END,
+    -- An update the server never published (the embedded bundle) falls back to
+    -- the runtime and platform the device declared with it.
     runtime_version = CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL
-        THEN device_identity.runtime_version ELSE (SELECT o.runtime_version FROM origin o) END,
+        THEN device_identity.runtime_version
+        ELSE COALESCE((SELECT o.runtime_version FROM origin o), sqlc.narg('declared_runtime_version')::text) END,
     platform = CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL
-        THEN device_identity.platform ELSE (SELECT o.platform FROM origin o) END,
+        THEN device_identity.platform
+        ELSE COALESCE((SELECT o.platform FROM origin o), sqlc.narg('declared_platform')::text) END,
     publish_group = CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL
         THEN device_identity.publish_group ELSE (SELECT o.publish_group FROM origin o) END,
     -- Only telemetry knows the hardware; a manifest poll passes NULL here and
@@ -1765,6 +1870,7 @@ UPDATE device_identity SET
     os_name = COALESCE(sqlc.narg('os_name'), device_identity.os_name),
     os_version = COALESCE(sqlc.narg('os_version'), device_identity.os_version),
     app_version = COALESCE(sqlc.narg('app_version'), device_identity.app_version),
+    channel_name = COALESCE(sqlc.narg('channel_name'), device_identity.channel_name),
     current_update_observed_at = CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL
         THEN device_identity.current_update_observed_at ELSE sqlc.arg('observed_at')::timestamptz END,
     -- Moved onto, not heard from. The watermark above advances on every poll,
@@ -1821,7 +1927,7 @@ WITH origin AS (
 )
 INSERT INTO device_identity (
     app_id, eas_client_id, country_code, city, lat, lng, current_update_id,
-    device_model, os_name, os_version, app_version, current_update_observed_at,
+    device_model, os_name, os_version, app_version, channel_name, current_update_observed_at,
     current_update_arrived_at,
     branch_name, runtime_version, platform, publish_group
 )
@@ -1829,13 +1935,18 @@ VALUES (
     $1, $2, sqlc.narg('country_code'), sqlc.narg('city'), sqlc.narg('lat'),
     sqlc.narg('lng'), (SELECT update_uuid FROM origin), sqlc.narg('device_model'),
     sqlc.narg('os_name'), sqlc.narg('os_version'), sqlc.narg('app_version'),
+    sqlc.narg('channel_name'),
     CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL
         THEN NULL ELSE sqlc.arg('observed_at')::timestamptz END,
     -- A first sighting IS an arrival.
     CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL
         THEN NULL ELSE sqlc.arg('observed_at')::timestamptz END,
-    (SELECT branch_name FROM origin), (SELECT runtime_version FROM origin),
-    (SELECT platform FROM origin), (SELECT publish_group FROM origin)
+    (SELECT branch_name FROM origin),
+    CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL THEN NULL
+        ELSE COALESCE((SELECT runtime_version FROM origin), sqlc.narg('declared_runtime_version')::text) END,
+    CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL THEN NULL
+        ELSE COALESCE((SELECT platform FROM origin), sqlc.narg('declared_platform')::text) END,
+    (SELECT publish_group FROM origin)
 )
 -- Same rule as TouchDeviceIdentity on the conflict arm: the release columns
 -- follow current_update_id, and only when this registration names one.
@@ -1860,6 +1971,7 @@ ON CONFLICT (app_id, eas_client_id) DO UPDATE SET
     os_name = COALESCE(EXCLUDED.os_name, device_identity.os_name),
     os_version = COALESCE(EXCLUDED.os_version, device_identity.os_version),
     app_version = COALESCE(EXCLUDED.app_version, device_identity.app_version),
+    channel_name = COALESCE(EXCLUDED.channel_name, device_identity.channel_name),
     current_update_observed_at = CASE WHEN sqlc.narg('current_update_id')::uuid IS NULL
         THEN device_identity.current_update_observed_at
         ELSE EXCLUDED.current_update_observed_at END,
