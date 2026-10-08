@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"xprem/config"
 
 	"github.com/gorilla/mux"
@@ -34,8 +35,9 @@ func NewDashboardCORSMiddleware() mux.MiddlewareFunc {
 	}
 }
 
-// isDashboardOrigin accepts the deployment's own origin and local dev servers
-// (vite serves the SPA from localhost on an arbitrary port).
+// isDashboardOrigin accepts the deployment's own origin, local dev servers
+// (vite serves the SPA from localhost on an arbitrary port), and the origins
+// in DASHBOARD_ORIGINS, for a SPA hosted on its own domain.
 func isDashboardOrigin(origin string) bool {
 	parsed, err := url.Parse(origin)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -44,6 +46,14 @@ func isDashboardOrigin(origin string) bool {
 	hostname := parsed.Hostname()
 	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
 		return true
+	}
+	// Exact scheme and host match: a prefix or suffix match would let
+	// https://xprem.example.com.attacker.net through.
+	for _, allowed := range strings.Split(config.GetEnv("DASHBOARD_ORIGINS"), ",") {
+		allowedURL, err := url.Parse(strings.TrimSpace(allowed))
+		if err == nil && allowedURL.Host != "" && parsed.Scheme == allowedURL.Scheme && parsed.Host == allowedURL.Host {
+			return true
+		}
 	}
 	base, err := url.Parse(config.BaseURL())
 	if err != nil {
