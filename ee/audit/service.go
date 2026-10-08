@@ -149,14 +149,32 @@ func (s *AuditService) PurgeOlderThan(ctx context.Context, retention time.Durati
 	return s.repo.PurgeBefore(ctx, time.Now().Add(-retention), s.archiveEnabled)
 }
 
-// StartRetentionPurgeFromEnv reads AUDIT_LOG_RETENTION_DAYS (default 550) and starts the daily purge.
-func (s *AuditService) StartRetentionPurgeFromEnv(ctx context.Context) {
+// retentionFromEnv reads AUDIT_LOG_RETENTION_DAYS (default 550).
+func retentionFromEnv() time.Duration {
 	retentionDays, err := strconv.Atoi(config.GetEnv("AUDIT_LOG_RETENTION_DAYS"))
 	if err != nil || retentionDays < 1 {
 		log.Printf("⚠️  [AUDIT] Invalid AUDIT_LOG_RETENTION_DAYS %q, using 550", config.GetEnv("AUDIT_LOG_RETENTION_DAYS"))
 		retentionDays = 550
 	}
-	s.startRetentionPurge(ctx, time.Duration(retentionDays)*24*time.Hour)
+	return time.Duration(retentionDays) * 24 * time.Hour
+}
+
+// StartRetentionPurgeFromEnv reads AUDIT_LOG_RETENTION_DAYS (default 550) and starts the daily purge.
+func (s *AuditService) StartRetentionPurgeFromEnv(ctx context.Context) {
+	s.startRetentionPurge(ctx, retentionFromEnv())
+}
+
+// RetentionPurgeTaskFromEnv returns one purge pass for a scheduler worker, nil
+// without the control plane.
+func (s *AuditService) RetentionPurgeTaskFromEnv() func(context.Context) error {
+	if s.repo == nil {
+		return nil
+	}
+	retention := retentionFromEnv()
+	return func(ctx context.Context) error {
+		s.runPurge(ctx, retention)
+		return nil
+	}
 }
 
 // startRetentionPurge purges once at boot then daily. Concurrent replicas racing the same

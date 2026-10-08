@@ -177,6 +177,15 @@ type DeploymentService struct {
 	// onAuditEvent is nil in community edition, where publishes, rollbacks and
 	// republishes leave no events.
 	onAuditEvent auditlog.RecordFunc
+	// runInline finishes a publish's follow-up work before returning instead
+	// of in goroutines, which a runtime that freezes after the response (Lambda)
+	// would never run.
+	runInline bool
+}
+
+// SetRunInline makes publish follow-up work run before the request returns.
+func (s *DeploymentService) SetRunInline(inline bool) {
+	s.runInline = inline
 }
 
 // SetSourcemapStore turns on source map uploads.
@@ -384,19 +393,31 @@ func (s *DeploymentService) MarkUpdateAsChecked(ctx context.Context, update type
 	for _, cacheKey := range cacheKeys {
 		cache.Delete(cacheKey)
 	}
-	go PreWarmManifestCache(s.updateService, update.AppId, update.Branch, update.RuntimeVersion, types.PlatformIOS)
-	go PreWarmManifestCache(s.updateService, update.AppId, update.Branch, update.RuntimeVersion, types.PlatformAndroid)
-	// No-op unless the checked update activated a per-update rollout.
-	go PreWarmControlManifest(s.updateService, update.AppId, update.Branch, update.RuntimeVersion, types.PlatformIOS)
-	go PreWarmControlManifest(s.updateService, update.AppId, update.Branch, update.RuntimeVersion, types.PlatformAndroid)
+	// Inline, the pre-warm is skipped: the first manifest request fills the
+	// cache instead, and a warmed in-process cache would only serve the
+	// instance that published.
+	if !s.runInline {
+		go PreWarmManifestCache(s.updateService, update.AppId, update.Branch, update.RuntimeVersion, types.PlatformIOS)
+		go PreWarmManifestCache(s.updateService, update.AppId, update.Branch, update.RuntimeVersion, types.PlatformAndroid)
+		// No-op unless the checked update activated a per-update rollout.
+		go PreWarmControlManifest(s.updateService, update.AppId, update.Branch, update.RuntimeVersion, types.PlatformIOS)
+		go PreWarmControlManifest(s.updateService, update.AppId, update.Branch, update.RuntimeVersion, types.PlatformAndroid)
+	}
 	if updateType == types.NormalUpdate && s.bsDiffService != nil {
-		go func(update types.Update, platform types.Platform) {
+		schedulePatches := func(update types.Update, platform types.Platform) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			if _, err := s.bsDiffService.ComputeBSDiffForPreviousUpdates(ctx, &update, updateUUID, platform); err != nil {
 				log.Printf("[bsdiff] scheduling patches for update %s: %v", update.UpdateId, err)
 			}
-		}(update, storedMetadata.Platform)
+		}
+		// Planning only enqueues the patch jobs; the patches are computed by
+		// the job workers either way.
+		if s.runInline {
+			schedulePatches(update, storedMetadata.Platform)
+		} else {
+			go schedulePatches(update, storedMetadata.Platform)
+		}
 	}
 	return updateUUID, nil
 }

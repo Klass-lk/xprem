@@ -86,6 +86,22 @@ func (h *HealthHistory) Start(parent context.Context) func() {
 	}
 }
 
+// RunOnce is one pass of the projector for a scheduler worker: drain the
+// outbox, then capture snapshots. A pass a minute stays above the snapshot
+// floor, so every pass captures.
+func (h *HealthHistory) RunOnce(ctx context.Context) error {
+	h.drainOutbox(ctx)
+	h.captureSnapshots(ctx)
+	return nil
+}
+
+// CaptureSegments is one pass of the segment capture for a scheduler worker,
+// due once per segment bucket.
+func (h *HealthHistory) CaptureSegments(ctx context.Context) error {
+	h.captureSegmentWindow(ctx)
+	return nil
+}
+
 // runSegments captures the segmented counters on their own goroutine and
 // timer, independent of the outbox/snapshot loop.
 func (h *HealthHistory) runSegments(ctx context.Context) {

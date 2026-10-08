@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 	"xprem/internal/auditlog"
 	"xprem/internal/cache"
@@ -92,6 +93,8 @@ type LicenseService struct {
 	instanceId   string
 	baseUrl      string
 	onAuditEvent auditlog.RecordFunc
+	// lastSync is when SyncIfStale last re-read the stored license (unix nanos).
+	lastSync atomic.Int64
 }
 
 // NewLicenseService accepts a nil repository (stateless mode); every method
@@ -386,6 +389,15 @@ func (s *LicenseService) StartValidationLoop(ctx context.Context) {
 	}()
 }
 
+// ValidateOnce is one pass of the validation loop for a scheduler worker.
+func (s *LicenseService) ValidateOnce(ctx context.Context) error {
+	if s.repo == nil {
+		return nil
+	}
+	s.validateWithLock(ctx)
+	return nil
+}
+
 func (s *LicenseService) validateWithLock(ctx context.Context) {
 	locked, err := cache.GetCache().TryLock(validateLockKey, validateLockTTLSeconds)
 	if err != nil {
@@ -416,6 +428,21 @@ func (s *LicenseService) StartSync(ctx context.Context, interval time.Duration) 
 			}
 		}
 	}()
+}
+
+// SyncIfStale re-reads the stored license when the last read is older than
+// maxAge. It replaces StartSync where no goroutine outlives a request: called
+// per request, it keeps every instance within maxAge of the stored state.
+func (s *LicenseService) SyncIfStale(ctx context.Context, maxAge time.Duration) {
+	if s.repo == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := s.lastSync.Load()
+	if now-last < int64(maxAge) || !s.lastSync.CompareAndSwap(last, now) {
+		return
+	}
+	s.syncFromStore(ctx)
 }
 
 func (s *LicenseService) syncFromStore(ctx context.Context) {

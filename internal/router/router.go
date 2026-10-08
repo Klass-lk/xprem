@@ -30,6 +30,14 @@ func NewRouter(container *AppContainer) *mux.Router {
 	r.SkipClean(true)
 	r.Use(middleware.LoggingMiddleware)
 	r.Use(middleware.RequestMetaMiddleware)
+	if container.BeforeRequest != nil {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				container.BeforeRequest(req.Context())
+				next.ServeHTTP(w, req)
+			})
+		})
+	}
 	if geoMiddleware := geoip.GetMiddleware(); geoMiddleware != nil {
 		r.Use(geoMiddleware)
 	}

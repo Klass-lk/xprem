@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 	"xprem/config"
@@ -71,11 +72,29 @@ type Config struct {
 	MaxConnIdleTime time.Duration
 }
 
+// lambdaPoolDefaults keeps a Lambda instance, which serves one request at a
+// time, from holding the server pool's 25 connections; total connections are
+// then bounded by the function's concurrency times DB_MAX_CONNS.
+var lambdaPoolDefaults = map[string]string{
+	"DB_MAX_CONNS":          "2",
+	"DB_MIN_CONNS":          "0",
+	"DB_MAX_CONN_IDLE_TIME": "1m",
+}
+
+func poolSetting(key string) string {
+	if config.IsLambda() && os.Getenv(key) == "" {
+		if value, ok := lambdaPoolDefaults[key]; ok {
+			return value
+		}
+	}
+	return config.GetEnv(key)
+}
+
 func LoadDBConfigFromEnv() Config {
-	maxConnsStr := config.GetEnv("DB_MAX_CONNS")
-	minConnsStr := config.GetEnv("DB_MIN_CONNS")
+	maxConnsStr := poolSetting("DB_MAX_CONNS")
+	minConnsStr := poolSetting("DB_MIN_CONNS")
 	maxLifetimeStr := config.GetEnv("DB_MAX_CONN_LIFETIME")
-	maxIdleTimeStr := config.GetEnv("DB_MAX_CONN_IDLE_TIME")
+	maxIdleTimeStr := poolSetting("DB_MAX_CONN_IDLE_TIME")
 
 	maxConns, _ := strconv.Atoi(maxConnsStr)
 	minConns, _ := strconv.Atoi(minConnsStr)

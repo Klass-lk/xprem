@@ -66,17 +66,26 @@ func exportLineFrom(event Event) exportLine {
 	}
 }
 
-// StartArchiveFromEnv reads the archive configuration from the environment and starts the exporter when enabled.
-func (s *AuditService) StartArchiveFromEnv(ctx context.Context) error {
+// archiveStoreFromEnv opens the archive destination, nil when ARCHIVE_AUDIT_LOGS is off.
+func (s *AuditService) archiveStoreFromEnv() (objectstore.Store, error) {
 	if config.GetEnv("ARCHIVE_AUDIT_LOGS") != "true" {
-		return nil
+		return nil, nil
 	}
 	if s.repo == nil {
-		return errors.New("ARCHIVE_AUDIT_LOGS requires the database control plane")
+		return nil, errors.New("ARCHIVE_AUDIT_LOGS requires the database control plane")
 	}
 	archiveStore, err := objectstore.OpenDedicated(archiveLocationEnv)
 	if err != nil {
-		return fmt.Errorf("audit archiving is enabled but %w", err)
+		return nil, fmt.Errorf("audit archiving is enabled but %w", err)
+	}
+	return archiveStore, nil
+}
+
+// StartArchiveFromEnv reads the archive configuration from the environment and starts the exporter when enabled.
+func (s *AuditService) StartArchiveFromEnv(ctx context.Context) error {
+	archiveStore, err := s.archiveStoreFromEnv()
+	if archiveStore == nil {
+		return err
 	}
 	intervalSeconds, intervalErr := strconv.Atoi(config.GetEnv("AUDIT_LOGS_EXPORT_INTERVAL_SECONDS"))
 	if intervalErr != nil || intervalSeconds < 10 {
@@ -86,6 +95,21 @@ func (s *AuditService) StartArchiveFromEnv(ctx context.Context) error {
 	s.startArchive(ctx, time.Duration(intervalSeconds)*time.Second, archiveStore)
 	log.Printf("📦 [AUDIT] Archiving audit logs every %ds", intervalSeconds)
 	return nil
+}
+
+// ArchiveTaskFromEnv returns one export pass for a scheduler worker, nil when
+// archiving is off. Like startArchive, it marks archiving enabled first so
+// the retention purge spares unarchived rows.
+func (s *AuditService) ArchiveTaskFromEnv() (func(context.Context) error, error) {
+	archiveStore, err := s.archiveStoreFromEnv()
+	if archiveStore == nil {
+		return nil, err
+	}
+	s.archiveEnabled = true
+	return func(ctx context.Context) error {
+		s.runArchive(ctx, archiveStore)
+		return nil
+	}, nil
 }
 
 // startArchive exports the audit log to the archive destination once at boot, then on the configured interval.

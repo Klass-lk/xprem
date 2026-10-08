@@ -26,6 +26,15 @@ type BranchService struct {
 	// onAuditEvent is the audit emission seam; nil (community) means branch
 	// changes leave no events.
 	onAuditEvent auditlog.RecordFunc
+	// runInline deletes a removed branch's files before returning instead of
+	// in a goroutine, which a runtime that freezes after the response (Lambda)
+	// would never finish.
+	runInline bool
+}
+
+// SetRunInline makes branch file cleanup run before the request returns.
+func (s *BranchService) SetRunInline(inline bool) {
+	s.runInline = inline
 }
 
 type BranchRepository interface {
@@ -152,7 +161,7 @@ func (s *BranchService) DeleteBranch(ctx context.Context, branchName string, app
 			ForgetSurfableBranches(appId, row.RuntimeVersion, platform)
 		}
 	}
-	go func(bucketRows []types.UpdateRef) {
+	deleteFiles := func(bucketRows []types.UpdateRef) {
 		for _, row := range bucketRows {
 			err := s.updateStore.Delete(context.Background(), appId, branchName, row.RuntimeVersion, strconv.FormatInt(row.ID, 10))
 			if err != nil {
@@ -166,7 +175,12 @@ func (s *BranchService) DeleteBranch(ctx context.Context, branchName string, app
 		if err := s.patchStore.DeleteBranch(context.Background(), appId, branchName); err != nil {
 			fmt.Printf("failed to delete bundle patches of branch %s: %v\n", branchName, err)
 		}
-	}(rows)
+	}
+	if s.runInline {
+		deleteFiles(rows)
+	} else {
+		go deleteFiles(rows)
+	}
 	return nil
 }
 

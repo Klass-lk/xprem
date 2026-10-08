@@ -186,6 +186,27 @@ func PublicHref(path string) string {
 	return PublicPath() + path
 }
 
+// IsLambda reports whether the process runs inside AWS Lambda, which freezes
+// it between invocations.
+func IsLambda() bool {
+	return os.Getenv("AWS_LAMBDA_RUNTIME_API") != ""
+}
+
+// IsScheduledBackground reports whether background work runs as scheduler
+// workers, one pass per invocation, instead of goroutines that loop for the
+// life of the process (BACKGROUND_MODE=scheduler|goroutines). It defaults to
+// scheduler on Lambda, where a goroutine stops the moment a response is sent.
+func IsScheduledBackground() bool {
+	switch GetEnv("BACKGROUND_MODE") {
+	case "scheduler":
+		return true
+	case "goroutines":
+		return false
+	default:
+		return IsLambda()
+	}
+}
+
 func IsTestMode() bool {
 	return flag.Lookup("test.v") != nil
 }

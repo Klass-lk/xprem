@@ -75,6 +75,20 @@ type AppContainer struct {
 	ObserveExplorerHandler      *observe.ExplorerHandler
 	ObserveErrorsHandler        *observe.ErrorsHandler
 	IdentityHandler             *identity.IdentityHandler
+	// ScheduledTasks is the background work in scheduler mode, for the
+	// entrypoint to register as scheduler workers; empty otherwise.
+	ScheduledTasks []ScheduledTask
+	// BeforeRequest, when set, runs ahead of every request: in scheduler mode
+	// it keeps per-instance state fresh without a background goroutine.
+	BeforeRequest func(ctx context.Context)
+}
+
+// ScheduledTask is one pass of a background loop, due on a five-field cron
+// expression.
+type ScheduledTask struct {
+	Name string
+	Cron string
+	Run  func(ctx context.Context) error
 }
 
 // logLegacyAppIdFallback logs, once at boot, which app (if any) receives
@@ -127,6 +141,17 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	telemetryEnabled := !config.IsServerTelemetryDisabled() && !config.IsTestMode()
 	var instanceId string
 	var instanceIdErr error
+
+	// Scheduler mode turns every background loop into a ScheduledTask the
+	// entrypoint registers; nothing below then outlives a request.
+	scheduled := config.IsScheduledBackground()
+	var tasks []ScheduledTask
+	schedule := func(name, cron string, run func(ctx context.Context) error) {
+		tasks = append(tasks, ScheduledTask{Name: name, Cron: cron, Run: run})
+	}
+	if scheduled {
+		log.Println("⏰ [BACKGROUND] Scheduler mode: background work runs as scheduler workers")
+	}
 
 	cleanup := func() {}
 	// Releases in reverse acquisition order.
@@ -193,7 +218,11 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 
 		if config.IsDeviceTelemetryDisabled() {
 			log.Println("🔕 [TELEMETRY] DISABLE_DEVICE_TELEMETRY is set; nothing is recorded about a device: manifest check-ins, identity ops and telemetry batches are all dropped, and no ClickHouse connection is opened.(CLICKHOUSE_URL is ignored.)")
-			addCleanup(observe.StartHealthOutboxDiscarder(ctx, dbEngine))
+			if scheduled {
+				schedule("observe-health-outbox-discard", "* * * * *", dbEngine.DiscardDeviceHealthOutbox)
+			} else {
+				addCleanup(observe.StartHealthOutboxDiscarder(ctx, dbEngine))
+			}
 		} else {
 			stateHistory = observe.NewStateHistory(dbEngine)
 			identityService = identity.NewService(identity.NewPostgresIdentityRepository(dbEngine))
@@ -209,10 +238,19 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 				branchResolver = observe.NewBranchResolver(cache.GetCache(), pgUpdateRepo.GetUpdateOriginByUUID)
 				healthHistory = observe.NewHealthHistory(dbEngine, chEngine)
 				observeClickHouse = chEngine
-				addCleanup(healthHistory.Start(ctx))
+				if scheduled {
+					schedule("observe-health-history", "* * * * *", healthHistory.RunOnce)
+					schedule("observe-health-segments", "*/5 * * * *", healthHistory.CaptureSegments)
+				} else {
+					addCleanup(healthHistory.Start(ctx))
+				}
 			} else {
 				log.Println("⚙️  [OBSERVE] CLICKHOUSE_URL is not set; telemetry ingestion (metrics/logs) stays disabled")
-				addCleanup(observe.StartHealthOutboxDiscarder(ctx, dbEngine))
+				if scheduled {
+					schedule("observe-health-outbox-discard", "* * * * *", dbEngine.DiscardDeviceHealthOutbox)
+				} else {
+					addCleanup(observe.StartHealthOutboxDiscarder(ctx, dbEngine))
+				}
 			}
 			explorer = observe.NewExplorer(dbEngine, observeClickHouse)
 		}
@@ -237,7 +275,12 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 
 	if telemetryEnabled && instanceIdErr == nil {
 		log.Println("📡 [TELEMETRY] Hourly usage ping enabled (instance id, base URL, version, configuration shape); set DISABLE_TELEMETRY=true to opt out")
-		telemetry.NewTelemetryService(userRepo, appRepo, instanceId).Start(ctx)
+		telemetryService := telemetry.NewTelemetryService(userRepo, appRepo, instanceId)
+		if scheduled {
+			schedule("telemetry-heartbeat", "@hourly", telemetryService.HeartbeatOnce)
+		} else {
+			telemetryService.Start(ctx)
+		}
 	}
 
 	// The router starts the geo resolver in every mode, so its cleanup does
@@ -247,10 +290,24 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	logLegacyAppIdFallback()
 
 	auditService := audit.NewAuditService(auditRepo)
-	if err := auditService.StartArchiveFromEnv(ctx); err != nil {
-		log.Fatalf("🚨 [AUDIT] %v", err)
+	if scheduled {
+		// Archive first: it marks archiving on, which the purge reads.
+		archive, err := auditService.ArchiveTaskFromEnv()
+		if err != nil {
+			log.Fatalf("🚨 [AUDIT] %v", err)
+		}
+		if archive != nil {
+			schedule("audit-archive", "*/5 * * * *", archive)
+		}
+		if purge := auditService.RetentionPurgeTaskFromEnv(); purge != nil {
+			schedule("audit-retention-purge", "0 3 * * *", purge)
+		}
+	} else {
+		if err := auditService.StartArchiveFromEnv(ctx); err != nil {
+			log.Fatalf("🚨 [AUDIT] %v", err)
+		}
+		auditService.StartRetentionPurgeFromEnv(ctx)
 	}
-	auditService.StartRetentionPurgeFromEnv(ctx)
 
 	licenseClient := licensing.NewClient()
 	licenseService := licensing.NewLicenseService(licenseRepo, licenseClient, instanceId, config.BaseURL())
@@ -259,9 +316,17 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	if err := licenseService.ActivateFromStore(ctx); err != nil {
 		log.Printf("⚠️  [LICENSE] Could not load the enterprise license from the database: %v", err)
 	}
-	licenseService.StartSync(ctx, 30*time.Second)
-	if !config.IsTestMode() {
-		licenseService.StartValidationLoop(ctx)
+	var beforeRequest func(ctx context.Context)
+	if scheduled {
+		beforeRequest = func(ctx context.Context) { licenseService.SyncIfStale(ctx, 30*time.Second) }
+		if !config.IsTestMode() {
+			schedule("license-validate", "*/15 * * * *", licenseService.ValidateOnce)
+		}
+	} else {
+		licenseService.StartSync(ctx, 30*time.Second)
+		if !config.IsTestMode() {
+			licenseService.StartValidationLoop(ctx)
+		}
 	}
 
 	apiKeyAccessService := apikeyrestrictions.NewApiKeyAccessService(apiKeyAccessRepo)
@@ -314,13 +379,23 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		if symbolicationService != nil && observeClickHouse != nil {
 			errorGroupsSweep := observe.NewErrorGroupsSweep(explorer, symbolicationService)
 			observe.RegisterErrorGroupsWorker(jobsClient.Workers(), errorGroupsSweep)
-			jobsClient.AddPeriodic(errorGroupsSweep.PeriodicJob())
+			if scheduled {
+				schedule("observe-error-groups-sweep", "* * * * *", errorGroupsSweep.Run)
+			} else {
+				jobsClient.AddPeriodic(errorGroupsSweep.PeriodicJob())
+			}
 		}
-		if err := jobsClient.Start(ctx); err != nil {
-			log.Fatalf("Job system startup failed: %v", err)
+		if scheduled {
+			if err := jobsClient.Prepare(ctx); err != nil {
+				log.Fatalf("Job system startup failed: %v", err)
+			}
+			schedule("jobs-drain", "* * * * *", jobsClient.Drain)
+		} else {
+			if err := jobsClient.Start(ctx); err != nil {
+				log.Fatalf("Job system startup failed: %v", err)
+			}
+			addCleanup(jobsClient.Stop)
 		}
-
-		addCleanup(jobsClient.Stop)
 	}
 	if config.IsBundleDiffingCDNRedirect() && !cdn.SupportsPatchRedirect() {
 		log.Fatalf("BUNDLE_DIFFING_CDN_REDIRECT needs a CDN with an edge that can add response headers (CloudFront or CDN_BASE_URL); resolved CDN: %q", cdn.ResolvedType())
@@ -328,6 +403,8 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	expoProtocolService := services.NewExpoProtocolService(appRepo, channelRepo, updateRepo, updateService, services.DefaultBranchRules(), resolvedBucket.BlobStore, resolvedBucket.PatchStore)
 	deploymentService := services.NewDeploymentService(branchService, updateService, updateRepo, resolvedBucket.BlobStore, resolvedBucket.UpdateStore, bsDiffService)
 	deploymentService.SetOnAuditEvent(auditService.Record)
+	deploymentService.SetRunInline(scheduled)
+	branchService.SetRunInline(scheduled)
 	if sourcemapStore != nil {
 		deploymentService.SetSourcemapStore(sourcemapStore)
 		deploymentService.SetSourcemapIndexer(symbolicationService)
@@ -418,6 +495,8 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		MCPHandler:                  mcpHandler,
 		OAuthHandler:                oauthHandler,
 		OAuthService:                oauthService,
+		ScheduledTasks:              tasks,
+		BeforeRequest:               beforeRequest,
 	}
 
 	if checkInRecorder != nil {

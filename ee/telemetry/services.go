@@ -188,6 +188,16 @@ func (s *TelemetryService) buildParams(ctx context.Context) *HeartbeatParams {
 	}
 }
 
+// HeartbeatOnce sends one heartbeat for a scheduler worker. Start's guards
+// apply: nothing is sent when telemetry is disabled.
+func (s *TelemetryService) HeartbeatOnce(ctx context.Context) error {
+	if config.IsServerTelemetryDisabled() || config.IsTestMode() {
+		return nil
+	}
+	s.heartbeat(ctx)
+	return nil
+}
+
 func (s *TelemetryService) heartbeat(ctx context.Context) {
 	locked, err := cache.GetCache().TryLock(heartbeatLockKey, heartbeatLockTTLSeconds)
 	if err != nil || !locked {
