@@ -58,7 +58,8 @@ func (c *Client) AddPeriodic(job *river.PeriodicJob) {
 	c.periodic = append(c.periodic, job)
 }
 
-func (c *Client) migrate(ctx context.Context) error {
+// Migrate brings the River schema up to date; Start and Prepare expect it.
+func (c *Client) Migrate(ctx context.Context) error {
 	migrator, err := rivermigrate.New(riverpgxv5.New(c.pool), nil)
 	if err != nil {
 		return fmt.Errorf("failed to prepare the river migrator: %w", err)
@@ -101,9 +102,6 @@ func (c *Client) newRiverClient(pollOnly bool) (*river.Client[pgx.Tx], error) {
 }
 
 func (c *Client) Start(ctx context.Context) error {
-	if err := c.migrate(ctx); err != nil {
-		return err
-	}
 	riverClient, err := c.newRiverClient(false)
 	if err != nil {
 		return err
@@ -120,9 +118,6 @@ func (c *Client) Start(ctx context.Context) error {
 // Prepare readies the client to enqueue without working any job: in scheduler
 // mode the jobs are worked by Drain, one pass per scheduler invocation.
 func (c *Client) Prepare(ctx context.Context) error {
-	if err := c.migrate(ctx); err != nil {
-		return err
-	}
 	riverClient, err := c.newRiverClient(true)
 	if err != nil {
 		return err

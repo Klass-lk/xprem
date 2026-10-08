@@ -70,13 +70,15 @@ func (w scheduledWorker) Execute(ctx context.Context) error {
 	return err
 }
 
-// initXprem runs the storage migrations and builds the xprem router, with
+// initXprem runs the storage migrations (unless RUN_MIGRATIONS is off) and builds the xprem router, with
 // every background task registered on the ginboot scheduler.
 func initXprem(server *ginboot.Server) (http.Handler, func()) {
 	// The lock is released on failure, so a crash-looping pod retries the
 	// migration on every boot instead of skipping it while the lock expires.
-	if err := bucketmigration.EnsureMigrations(); err != nil {
-		log.Fatalf("🚨 [BUCKET] %v", err)
+	if config.ShouldRunMigrations() {
+		if err := bucketmigration.EnsureMigrations(); err != nil {
+			log.Fatalf("🚨 [BUCKET] %v", err)
+		}
 	}
 	container, cleanup := infrastructure.InitDependencies(context.Background())
 	for _, task := range container.ScheduledTasks {

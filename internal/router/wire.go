@@ -181,8 +181,12 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 			log.Fatalf("Database initialization failed: %v", err)
 		}
 		cleanup = func() { dbEngine.Close() }
-		migrations.SetEngine(dbEngine)
-		postgres.RunDBMigrations(dbUrl)
+		if config.ShouldRunMigrations() {
+			migrations.SetEngine(dbEngine)
+			postgres.RunDBMigrations(dbUrl)
+		} else {
+			log.Println("⏭️  [DATABASE] RUN_MIGRATIONS is off, expecting the schema to be migrated by cmd/migrate")
+		}
 
 		authRepo = repository.NewPostgresAuthRepository(dbEngine)
 		blobRepo = repository.NewPostgresBlobRepository(dbEngine)
@@ -233,7 +237,9 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 					log.Fatalf("🚨 [CLICKHOUSE] %v", err)
 				}
 				addCleanup(chEngine.Close)
-				clickhouse.RunDBMigrations(chUrl, dbUrl)
+				if config.ShouldRunMigrations() {
+					clickhouse.RunDBMigrations(chUrl, dbUrl)
+				}
 				telemetrySink = observe.NewClickHouseTelemetrySink(chEngine)
 				branchResolver = observe.NewBranchResolver(cache.GetCache(), pgUpdateRepo.GetUpdateOriginByUUID)
 				healthHistory = observe.NewHealthHistory(dbEngine, chEngine)
@@ -383,6 +389,11 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 				schedule("observe-error-groups-sweep", "* * * * *", errorGroupsSweep.Run)
 			} else {
 				jobsClient.AddPeriodic(errorGroupsSweep.PeriodicJob())
+			}
+		}
+		if config.ShouldRunMigrations() {
+			if err := jobsClient.Migrate(ctx); err != nil {
+				log.Fatalf("Job system migration failed: %v", err)
 			}
 		}
 		if scheduled {

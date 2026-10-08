@@ -207,6 +207,20 @@ func IsScheduledBackground() bool {
 	}
 }
 
+// ShouldRunMigrations reports whether the server migrates the bucket and the
+// databases at boot (RUN_MIGRATIONS=true|false). It defaults to off on Lambda,
+// where every cold start would pay for it: run cmd/migrate on deploy instead.
+func ShouldRunMigrations() bool {
+	if value := GetEnv("RUN_MIGRATIONS"); value != "" {
+		run, err := strconv.ParseBool(value)
+		if err == nil {
+			return run
+		}
+		log.Printf("Invalid RUN_MIGRATIONS %q, using the default", value)
+	}
+	return !IsLambda()
+}
+
 func IsTestMode() bool {
 	return flag.Lookup("test.v") != nil
 }
