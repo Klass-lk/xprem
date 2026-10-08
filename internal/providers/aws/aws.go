@@ -24,10 +24,10 @@ func GetS3Client() (*s3.Client, error) {
 	initS3Client.Do(func() {
 		var cfg awssdk.Config
 		opts := []func(*awsconfig.LoadOptions) error{
-			awsconfig.WithRegion(config.GetEnv("AWS_REGION")),
+			awsconfig.WithRegion(config.S3Region()),
 		}
-		accessKey := config.GetEnv("AWS_ACCESS_KEY_ID")
-		secretKey := config.GetEnv("AWS_SECRET_ACCESS_KEY")
+		accessKey := config.S3AccessKeyID()
+		secretKey := config.S3SecretAccessKey()
 		if accessKey != "" && secretKey != "" {
 			opts = append(opts, awsconfig.WithCredentialsProvider(
 				awssdk.CredentialsProviderFunc(func(ctx context.Context) (awssdk.Credentials, error) {
@@ -52,12 +52,16 @@ func GetS3Client() (*s3.Client, error) {
 }
 
 func applyS3ClientOptions(o *s3.Options) {
-	baseEndpoint := config.GetEnv("AWS_BASE_ENDPOINT")
+	baseEndpoint := config.S3BaseEndpoint()
 	if baseEndpoint != "" {
 		o.BaseEndpoint = awssdk.String(baseEndpoint)
 	}
 
-	o.UsePathStyle = config.GetEnv("AWS_S3_FORCE_PATH_STYLE") == "true"
+	o.UsePathStyle = config.S3ForcePathStyle() == "true"
+	if config.S3ChecksumWhenRequired() {
+		o.RequestChecksumCalculation = awssdk.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = awssdk.ResponseChecksumValidationWhenRequired
+	}
 }
 
 // Process-local only: secret values must never reach the shared cache. The

@@ -43,6 +43,48 @@ func GetBindAddress() string {
 	return bind_address.String()
 }
 
+// The S3 client reads its settings from S3_* first and falls back to AWS_*.
+// On Lambda the AWS_* names are reserved, so an S3-compatible store with its
+// own endpoint and keys (Cloudflare R2, MinIO) can only be configured
+// through S3_*.
+
+func S3Region() string {
+	return firstEnv("S3_REGION", "AWS_REGION")
+}
+
+func S3AccessKeyID() string {
+	return firstEnv("S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+}
+
+func S3SecretAccessKey() string {
+	return firstEnv("S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+}
+
+func S3BaseEndpoint() string {
+	return firstEnv("S3_BASE_ENDPOINT", "AWS_BASE_ENDPOINT")
+}
+
+func S3ForcePathStyle() string {
+	return firstEnv("S3_FORCE_PATH_STYLE", "AWS_S3_FORCE_PATH_STYLE")
+}
+
+// S3ChecksumWhenRequired reports S3_REQUEST_CHECKSUM_CALCULATION=when_required:
+// checksums only where the operation requires them, for stores that reject
+// the SDK's default ones. The SDK reads AWS_REQUEST_CHECKSUM_CALCULATION on its
+// own; this is the name that can be set on Lambda.
+func S3ChecksumWhenRequired() bool {
+	return GetEnv("S3_REQUEST_CHECKSUM_CALCULATION") == "when_required"
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := GetEnv(key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func GetDBURL() string {
 	return GetEnv("DB_URL")
 }
@@ -100,9 +142,9 @@ func validateBucketParams(storageMode string) bool {
 			log.Printf("S3_BUCKET_NAME not set")
 			return false
 		}
-		region := GetEnv("AWS_REGION")
+		region := S3Region()
 		if region == "" {
-			log.Printf("AWS_REGION not set")
+			log.Printf("Neither S3_REGION nor AWS_REGION is set")
 			return false
 		}
 	case "gcs":
